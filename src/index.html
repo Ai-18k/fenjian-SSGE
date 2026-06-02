@@ -1,0 +1,515 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>智能分拣系统 · 可视化</title>
+  <style>
+    :root {
+      --bg: #f4f6f9;
+      --card: #ffffff;
+      --text: #1e293b;
+      --muted: #64748b;
+      --line: #e2e8f0;
+      --green: #16a34a;
+      --blue: #2563eb;
+      --purple: #7c3aed;
+      --amber: #d97706;
+      --red: #dc2626;
+      --small: #7dd3fc;
+      --mid: #86efac;
+      --large: #fbbf24;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+    }
+    header {
+      background: var(--card);
+      border-bottom: 1px solid var(--line);
+      padding: 16px 24px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 12px;
+    }
+    header h1 { font-size: 20px; font-weight: 700; }
+    header p { font-size: 13px; color: var(--muted); margin-top: 4px; }
+    header a { color: var(--blue); font-size: 13px; text-decoration: none; margin-left: 16px; }
+    .status-pill {
+      padding: 6px 14px;
+      border-radius: 999px;
+      font-size: 13px;
+      font-weight: 600;
+      background: #e2e8f0;
+      color: #475569;
+    }
+    .status-pill.running { background: #dcfce7; color: #166534; }
+    .status-pill.paused { background: #fef3c7; color: #92400e; }
+    .status-pill.finished { background: #dbeafe; color: #1e40af; }
+
+    main { padding: 20px 24px 40px; max-width: 1440px; margin: 0 auto; }
+
+    .controls {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 16px 18px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      align-items: end;
+      margin-bottom: 18px;
+    }
+    .field { display: flex; flex-direction: column; gap: 4px; }
+    .field label { font-size: 12px; color: var(--muted); }
+    .field input, .field select {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 8px 10px;
+      font-size: 14px;
+      width: 120px;
+    }
+    button {
+      border: none;
+      border-radius: 10px;
+      padding: 9px 16px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      color: #fff;
+      background: var(--blue);
+    }
+    button.secondary { background: #64748b; }
+    button.warn { background: var(--amber); }
+    button:disabled { opacity: 0.45; cursor: not-allowed; }
+
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+      gap: 12px;
+      margin-bottom: 18px;
+    }
+    .stat {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 14px 16px;
+    }
+    .stat .label { font-size: 12px; color: var(--muted); }
+    .stat .value { font-size: 26px; font-weight: 700; margin-top: 4px; }
+    .stat .hint { font-size: 11px; color: var(--muted); margin-top: 2px; }
+
+    .progress-wrap {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 14px 16px;
+      margin-bottom: 18px;
+    }
+    .progress-bar {
+      height: 10px;
+      background: #e2e8f0;
+      border-radius: 999px;
+      overflow: hidden;
+      margin-top: 8px;
+    }
+    .progress-bar div {
+      height: 100%;
+      background: linear-gradient(90deg, var(--green), var(--blue));
+      width: 0%;
+      transition: width 0.2s;
+    }
+
+    .grid-2 {
+      display: grid;
+      grid-template-columns: 1fr 340px;
+      gap: 18px;
+    }
+    @media (max-width: 1100px) {
+      .grid-2 { grid-template-columns: 1fr; }
+    }
+
+    .panel {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 16px;
+    }
+    .panel h2 {
+      font-size: 15px;
+      margin-bottom: 12px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .mod-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+    .mod-A { background: var(--green); }
+    .mod-B { background: var(--blue); }
+    .mod-C { background: var(--purple); }
+
+    .spec-row {
+      display: grid;
+      grid-template-columns: 52px 1fr 36px;
+      gap: 8px;
+      align-items: center;
+      margin-bottom: 8px;
+      font-size: 12px;
+    }
+    .spec-name { font-weight: 600; color: #334155; }
+    .bars {
+      display: flex;
+      gap: 3px;
+      height: 18px;
+      align-items: stretch;
+    }
+    .bar {
+      border-radius: 4px;
+      min-width: 2px;
+      transition: width 0.15s;
+    }
+    .bar.small { background: var(--small); }
+    .bar.mid { background: var(--mid); }
+    .bar.large { background: var(--large); }
+    .spec-total { text-align: right; color: var(--muted); }
+
+    canvas#chart {
+      width: 100%;
+      height: 180px;
+      display: block;
+    }
+
+    .log {
+      max-height: 420px;
+      overflow-y: auto;
+      font-size: 12px;
+      line-height: 1.55;
+    }
+    .log-item {
+      padding: 6px 0;
+      border-bottom: 1px dashed var(--line);
+    }
+    .log-item .t { color: var(--muted); margin-right: 6px; }
+    .log-item.pack { color: #166534; }
+    .log-item.reflow { color: #92400e; }
+    .log-item.outside { color: var(--red); }
+    .log-item.done { color: var(--blue); font-weight: 600; }
+
+    .carton-list { font-size: 12px; }
+    .carton-item {
+      padding: 8px 0;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .legend {
+      display: flex;
+      gap: 14px;
+      font-size: 11px;
+      color: var(--muted);
+      margin-bottom: 10px;
+    }
+    .legend span::before {
+      content: "";
+      display: inline-block;
+      width: 10px;
+      height: 10px;
+      border-radius: 2px;
+      margin-right: 4px;
+      vertical-align: middle;
+    }
+    .legend .l-small::before { background: var(--small); }
+    .legend .l-mid::before { background: var(--mid); }
+    .legend .l-large::before { background: var(--large); }
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <h1>智能分拣系统 · 可视化监控</h1>
+      <p>25000 条种子批次 · FIFO 小/中/大料道 · 5kg 装盒 · 超时回流
+        <a href="/monitor">→ FIFO 动画监控</a>
+      </p>
+    </div>
+    <div id="statusPill" class="status-pill">待机</div>
+  </header>
+
+  <main>
+    <div class="controls">
+      <div class="field"><label>随机种子</label><input id="seed" type="number" value="42"></div>
+      <div class="field"><label>总条数</label><input id="total" type="number" value="25000"></div>
+      <div class="field"><label>移动超时(s)</label><input id="moveTimeout" type="number" value="120"></div>
+      <div class="field"><label>模拟倍速</label><input id="speed" type="number" value="50" min="1"></div>
+      <button id="btnStart">开始模拟</button>
+      <button id="btnPause" class="warn" disabled>暂停</button>
+      <button id="btnResume" class="secondary" disabled>继续</button>
+      <button id="btnStop" class="secondary" disabled>停止</button>
+      <a id="btnReport" href="/api/report?seed=42" style="text-decoration:none">
+        <button type="button" class="secondary" disabled id="btnReportInner">下载报告</button>
+      </a>
+    </div>
+
+    <div class="stats">
+      <div class="stat"><div class="label">模拟时间</div><div class="value" id="sTick">0</div><div class="hint">秒</div></div>
+      <div class="stat"><div class="label">入料进度</div><div class="value" id="sInput">0</div><div class="hint" id="sInputHint">/ 25000</div></div>
+      <div class="stat"><div class="label">成功装盒</div><div class="value" id="sCartons">0</div><div class="hint">4980~5030g</div></div>
+      <div class="stat"><div class="label">装箱鱼数</div><div class="value" id="sPacked">0</div></div>
+      <div class="stat"><div class="label">回流次数</div><div class="value" id="sReflow">0</div><div class="hint" id="sReflowHint">超时/超容</div></div>
+      <div class="stat"><div class="label">规格外</div><div class="value" id="sOutside">0</div></div>
+      <div class="stat"><div class="label">未匹配尾料</div><div class="value" id="sUnmatched">0</div></div>
+      <div class="stat"><div class="label">回流待入库</div><div class="value" id="sReflowQ">0</div></div>
+    </div>
+
+    <div class="progress-wrap">
+      <div style="display:flex;justify-content:space-between;font-size:13px">
+        <span>入料进度</span>
+        <span id="progressText">0%</span>
+      </div>
+      <div class="progress-bar"><div id="progressBar"></div></div>
+    </div>
+
+    <div class="grid-2">
+      <div>
+        <div class="panel" style="margin-bottom:18px">
+          <h2>趋势 · 装盒 / 回流 / 入料</h2>
+          <canvas id="chart" width="900" height="180"></canvas>
+        </div>
+
+        <div id="modulePanels"></div>
+      </div>
+
+      <div>
+        <div class="panel" style="margin-bottom:18px">
+          <h2>最近封箱</h2>
+          <div class="carton-list" id="cartonList"><div style="color:var(--muted);font-size:12px">暂无</div></div>
+        </div>
+        <div class="panel">
+          <h2>实时日志</h2>
+          <div class="log" id="logBox"></div>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <script>
+    const $ = id => document.getElementById(id);
+    const MODULE_META = { A: "15P~40P", B: "45P~90P", C: "100P~150P" };
+    const BUCKET_LABEL = { small: "小", medium: "中", large: "大" };
+
+    let pollTimer = null;
+    let lastEventCount = 0;
+
+    async function api(path, body) {
+      const opt = body ? {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      } : {};
+      const res = await fetch(path, opt);
+      return res.json();
+    }
+
+    function setStatus(st) {
+      const pill = $("statusPill");
+      const map = { idle: "待机", running: "运行中", paused: "已暂停", finished: "已完成" };
+      pill.textContent = map[st] || st;
+      pill.className = "status-pill " + (st || "idle");
+    }
+
+    function renderModules(modules) {
+      const root = $("modulePanels");
+      root.innerHTML = "";
+      for (const [mod, specs] of Object.entries(modules || {})) {
+        const panel = document.createElement("div");
+        panel.className = "panel";
+        panel.style.marginBottom = "14px";
+        panel.innerHTML = `
+          <h2><span class="mod-dot mod-${mod}"></span>模块 ${mod} · ${MODULE_META[mod] || ""}</h2>
+          <div class="legend">
+            <span class="l-small">小</span><span class="l-mid">中</span><span class="l-large">大</span>
+          </div>
+          <div class="spec-rows"></div>
+        `;
+        const rows = panel.querySelector(".spec-rows");
+        const entries = Object.entries(specs).sort((a, b) => a[0].localeCompare(b[0]));
+        for (const [spec, q] of entries) {
+          const maxBar = Math.max(q.capacity * 3, q.total, 1);
+          const sw = Math.max(2, (q.small / maxBar) * 100);
+          const mw = Math.max(2, (q.medium / maxBar) * 100);
+          const lw = Math.max(2, (q.large / maxBar) * 100);
+          const row = document.createElement("div");
+          row.className = "spec-row";
+          row.innerHTML = `
+            <div class="spec-name">${spec.toUpperCase()}</div>
+            <div class="bars">
+              <div class="bar small" style="width:${sw}%" title="小 ${q.small}"></div>
+              <div class="bar mid" style="width:${mw}%" title="中 ${q.medium}"></div>
+              <div class="bar large" style="width:${lw}%" title="大 ${q.large}"></div>
+            </div>
+            <div class="spec-total">${q.total}</div>
+          `;
+          rows.appendChild(row);
+        }
+        root.appendChild(panel);
+      }
+    }
+
+    function drawChart(history) {
+      const canvas = $("chart");
+      const ctx = canvas.getContext("2d");
+      const w = canvas.width, h = canvas.height;
+      ctx.clearRect(0, 0, w, h);
+      if (!history || history.length < 2) return;
+
+      const pad = { l: 44, r: 16, t: 12, b: 28 };
+      const xs = history.map(p => p.tick);
+      const maxTick = Math.max(...xs, 1);
+      const maxVal = Math.max(...history.map(p => Math.max(p.input, p.cartons, p.reflow)), 1);
+
+      const xScale = x => pad.l + (x / maxTick) * (w - pad.l - pad.r);
+      const yScale = y => h - pad.b - (y / maxVal) * (h - pad.t - pad.b);
+
+      ctx.strokeStyle = "#e2e8f0";
+      ctx.beginPath();
+      ctx.moveTo(pad.l, pad.t);
+      ctx.lineTo(pad.l, h - pad.b);
+      ctx.lineTo(w - pad.r, h - pad.b);
+      ctx.stroke();
+
+      function line(key, color) {
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        history.forEach((p, i) => {
+          const x = xScale(p.tick), y = yScale(p[key]);
+          i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+        });
+        ctx.stroke();
+      }
+      line("input", "#2563eb");
+      line("cartons", "#16a34a");
+      line("reflow", "#d97706");
+
+      ctx.fillStyle = "#64748b";
+      ctx.font = "11px sans-serif";
+      ctx.fillText("0", 8, h - pad.b);
+      ctx.fillText(String(maxVal), 8, pad.t + 4);
+    }
+
+    function appendLogs(events) {
+      if (!events || !events.length) return;
+      const box = $("logBox");
+      events.slice(-15).forEach(ev => {
+        const div = document.createElement("div");
+        div.className = "log-item " + (ev.kind || "");
+        div.innerHTML = `<span class="t">t=${ev.tick}</span>${ev.msg}`;
+        box.appendChild(div);
+      });
+      while (box.childNodes.length > 120) box.removeChild(box.firstChild);
+      box.scrollTop = box.scrollHeight;
+    }
+
+    function renderCartons(list) {
+      const el = $("cartonList");
+      if (!list || !list.length) {
+        el.innerHTML = '<div style="color:var(--muted);font-size:12px">暂无</div>';
+        return;
+      }
+      el.innerHTML = list.slice().reverse().map(c => {
+        const parts = Object.entries(c.parts)
+          .filter(([, n]) => n)
+          .map(([b, n]) => BUCKET_LABEL[b] + n)
+          .join("+");
+        return `<div class="carton-item"><strong>${c.spec.toUpperCase()}</strong> ${c.count}尾 ${c.weight}g<br><span style="color:var(--muted)">${parts}</span></div>`;
+      }).join("");
+    }
+
+    function updateUI(state) {
+      if (state.status === "idle") {
+        setStatus("idle");
+        return;
+      }
+      setStatus(state.status);
+      $("sTick").textContent = state.tick ?? 0;
+      $("sInput").textContent = state.input_count ?? 0;
+      $("sInputHint").textContent = "/ " + (state.total_fish ?? 0);
+      $("sCartons").textContent = state.cartons ?? 0;
+      $("sPacked").textContent = state.packed_fish ?? 0;
+      $("sReflow").textContent = state.reflow_count ?? 0;
+      $("sReflowHint").textContent = `超时 ${state.timeout_reflow ?? 0} / 超容 ${state.overflow_reflow ?? 0}`;
+      $("sOutside").textContent = state.outside_count ?? 0;
+      $("sUnmatched").textContent = state.unmatched_count ?? 0;
+      $("sReflowQ").textContent = state.reflow_queue ?? 0;
+
+      const pct = state.total_fish ? Math.min(100, (state.input_count / state.total_fish) * 100) : 0;
+      $("progressBar").style.width = pct + "%";
+      $("progressText").textContent = pct.toFixed(1) + "%";
+
+      renderModules(state.modules);
+      drawChart(state.history);
+      renderCartons(state.recent_cartons);
+
+      const evLen = (state.events || []).length;
+      if (evLen !== lastEventCount) {
+        appendLogs(state.events);
+        lastEventCount = evLen;
+      }
+
+      const running = state.running;
+      const finished = state.finished;
+      $("btnStart").disabled = running;
+      $("btnPause").disabled = !running || state.paused;
+      $("btnResume").disabled = !running || !state.paused;
+      $("btnStop").disabled = !running;
+      $("btnReportInner").disabled = !finished;
+      if (finished && state.seed) {
+        $("btnReport").href = "/api/report?seed=" + state.seed;
+      }
+    }
+
+    async function poll() {
+      try {
+        const state = await api("/api/state");
+        updateUI(state);
+        if (state.finished || state.status === "idle") {
+          clearInterval(pollTimer);
+          pollTimer = null;
+        }
+      } catch (e) {
+        console.error(e);
+      }
+    }
+
+    $("btnStart").onclick = async () => {
+      $("logBox").innerHTML = "";
+      lastEventCount = 0;
+      const body = {
+        seed: +$("seed").value,
+        total: +$("total").value,
+        move_timeout: +$("moveTimeout").value,
+        speed: +$("speed").value,
+      };
+      $("btnReport").href = "/api/report?seed=" + body.seed;
+      const res = await api("/api/start", body);
+      if (!res.ok) { alert(res.error || "启动失败"); return; }
+      updateUI(res.state);
+      if (pollTimer) clearInterval(pollTimer);
+      pollTimer = setInterval(poll, 200);
+    };
+
+    $("btnPause").onclick = () => api("/api/pause").then(r => updateUI(r.state));
+    $("btnResume").onclick = () => api("/api/resume").then(r => updateUI(r.state));
+    $("btnStop").onclick = () => api("/api/stop").then(r => updateUI(r.state));
+
+    api("/api/config").then(cfg => {
+      $("seed").value = cfg.default_seed;
+      $("total").value = cfg.default_total;
+      $("moveTimeout").value = cfg.default_move_timeout;
+    });
+    poll();
+  </script>
+</body>
+</html>

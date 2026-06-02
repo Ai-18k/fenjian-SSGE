@@ -1,0 +1,531 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>智能分拣 FIFO 动画监控 · 需求推送</title>
+  <style>
+    :root{--bg:#f4f7fb;--panel:#fff;--line:#d8e3f1;--text:#1f2937;--muted:#64748b;--blue:#2563eb;--green:#16a34a;--orange:#f59e0b;--red:#ef4444;--purple:#7c3aed}
+    *{box-sizing:border-box}body{margin:0;font-family:Arial,"Microsoft YaHei",sans-serif;background:var(--bg);color:var(--text)}
+    header{padding:16px 20px;background:var(--panel);border-bottom:1px solid var(--line);display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px}
+    header h1{margin:0;font-size:20px}header p{margin:4px 0 0;font-size:13px;color:var(--muted)}
+    header a{color:var(--blue);font-size:13px;text-decoration:none}
+    .wrap{padding:12px 20px 24px;display:grid;gap:12px}
+    .controls{display:grid;grid-template-columns:repeat(auto-fit,minmax(100px,1fr));gap:8px;background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:12px;align-items:end}
+    label{display:grid;gap:4px;font-size:12px;color:var(--muted)}
+    input,select{width:100%;border:1px solid var(--line);border-radius:8px;padding:8px;font-size:14px}
+    button{border:0;border-radius:10px;padding:9px 14px;font-weight:700;cursor:pointer;color:#fff;background:var(--blue)}
+    button.secondary{background:#64748b}button.good{background:var(--green)}button.warn{background:#d97706}
+    .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:8px}
+    .stat{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:10px 12px}
+    .stat .n{font-size:11px;color:var(--muted)}.stat .v{font-size:22px;font-weight:800;margin-top:2px}
+    .grid{display:grid;grid-template-columns:1fr 380px;gap:12px}
+    @media(max-width:1200px){.grid{grid-template-columns:1fr}}
+    .panel{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:12px;overflow:hidden}
+    .panel h2{margin:0 0 10px;font-size:15px}
+    .scene-wrap{height:72vh;overflow:auto}canvas{display:block;background:#f8fafc;border:1px solid #dbe5f3;border-radius:10px}
+    .log{height:160px;overflow:auto;background:#f8fafc;border:1px solid var(--line);border-radius:10px;padding:8px;font:12px/1.5 Consolas,monospace}
+    .demand-card{border:1px solid #bfdbfe;border-radius:10px;padding:8px 10px;margin-bottom:8px;background:#eff6ff;font-size:12px}
+    .demand-card.active{border-color:var(--green);background:#ecfdf5}
+    .demand-scroll{max-height:320px;overflow-y:auto}
+    .spec-group{font-weight:700;font-size:12px;margin:10px 0 4px;padding-top:4px;border-top:1px solid #e5edf7}
+    .spec-group:first-child{border-top:0;margin-top:0}
+    .demand-addr{font-family:Consolas,monospace;font-weight:700;color:#1d4ed8;margin:4px 0}
+    .pill{display:inline-block;border-radius:999px;padding:2px 8px;font-size:11px;font-weight:700}
+    .pill.good{background:#dcfce7;color:#166534}.pill.warn{background:#fef3c7;color:#92400e}.pill.info{background:#dbeafe;color:#1e40af}
+    .result-line{display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #e5edf7;font-size:12px}
+    .inlet-banner{background:#fef3c7;border:1px solid #fcd34d;border-radius:10px;padding:10px;font-size:12px;margin-bottom:10px}
+    .bar{height:8px;background:#e2e8f0;border-radius:999px;overflow:hidden}.bar div{height:100%;background:var(--blue);width:0}
+  </style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>智能分拣 FIFO 动画监控</h1>
+    <p>监控每条鱼 / 每箱状态 · 发出缺鱼需求 · 进料口按地址定向推送</p>
+  </div>
+  <a href="/">← 返回统计面板</a>
+</header>
+<main class="wrap">
+  <section class="controls">
+    <label>随机种子<input id="seedInput" type="number" value="42"></label>
+    <label>总鱼数<input id="totalFish" type="number" value="25000"></label>
+    <label>速度<input id="speedInput" type="number" value="8" min="1" max="500"></label>
+    <label>料道容量倍率<input id="capacityFactor" type="number" value="8"></label>
+    <label>队首超时(s)<input id="headTimeout" type="number" value="0"></label>
+    <label>显示模式<select id="drawMode"><option value="normal">正常</option><option value="light">轻量</option></select></label>
+    <button class="good" id="startBtn">开始</button>
+    <button class="secondary" id="pauseBtn">暂停</button>
+    <button class="warn" id="fastBtn">快速跑完</button>
+    <button class="secondary" id="resetBtn">重置</button>
+  </section>
+  <section class="stats">
+    <div class="stat"><div class="n">累计来鱼</div><div class="v" id="sInput">0</div></div>
+    <div class="stat"><div class="n">完成箱数</div><div class="v" id="sCartons">0</div></div>
+    <div class="stat"><div class="n">定向推送</div><div class="v" id="sDirect">0</div></div>
+    <div class="stat"><div class="n">在制品</div><div class="v" id="sWip">0</div></div>
+    <div class="stat"><div class="n">回流/尾料</div><div class="v" id="sReflow">0</div></div>
+    <div class="stat"><div class="n">活跃需求</div><div class="v" id="sDemand">0</div></div>
+  </section>
+  <div class="bar"><div id="progressBar"></div></div>
+  <section class="grid">
+    <div class="panel scene-wrap"><canvas id="scene" width="1740" height="1580"></canvas></div>
+    <div>
+      <div class="panel" style="margin-bottom:12px">
+        <h2>进料口 · 当前需求广播</h2>
+        <div class="inlet-banner" id="inletBanner">等待开始…</div>
+        <h2>需求地址列表 <span id="demandHint" style="font-size:11px;color:#64748b;font-weight:400"></span></h2>
+        <div class="demand-scroll" id="demandPanel"></div>
+      </div>
+      <div class="panel" style="margin-bottom:12px">
+        <h2>装箱工位状态</h2>
+        <div id="moduleState"></div>
+      </div>
+      <div class="panel">
+        <h2>运行日志</h2>
+        <div class="log" id="log"></div>
+      </div>
+    </div>
+  </section>
+</main>
+<script>
+'use strict';
+const TARGET_MIN=4980,TARGET_MAX=5030,TARGET_MID=5005;
+const SPECS={"15p":{range:[566,700],counts:[7,8,9]},"20p":{range:[446,565],counts:[10,11]},"25p":{range:[366,445],counts:[12,13,14]},"30p":{range:[306,365],counts:[15,16]},"35p":{range:[266,305],counts:[17,18,19]},"40p":{range:[231,265],counts:[20,21]},"45p":{range:[211,230],counts:[22,23]},"50p":{range:[183,210],counts:[25,26]},"60p":{range:[153,182],counts:[30,31]},"70p":{range:[133,152],counts:[35,36]},"80p":{range:[116,132],counts:[40,41]},"90p":{range:[106,115],counts:[45,46]},"100p":{range:[96,105],counts:[50,51]},"110p":{range:[87,95],counts:[55,56]},"120p":{range:[80,86],counts:[60,61]},"130p":{range:[74,79],counts:[65,66]},"140p":{range:[69,73],counts:[70,71]},"150p":{range:[65,68],counts:[75,76]}};
+const MODULE_SPECS={A:["15p","20p","25p","30p","35p","40p"],B:["45p","50p","60p","70p","80p","90p"],C:["100p","110p","120p","130p","140p","150p"]};
+const MODULE_COLOR={A:'#16a34a',B:'#2563eb',C:'#7c3aed'};
+const BUCKET_COLOR={light:'#7dd3fc',mid:'#86efac',heavy:'#fbbf24'};
+const BUCKETS=['light','mid','heavy'];
+let canvas,ctx,running=false,lastTs=0,beltPhase=0,spawnTimer=0,simTime=0,cartonSeq=0;
+let movingFish=[],lanes={},laneList=[],modules={},finished=false;
+let batchFish=[],batchIndex=0,batchLoaded=false;
+let stats={input:0,cartons:0,directRoute:0,outsideTail:0,fifoReflow:0,batchTail:0,overflow:0,timeout:0};
+let currentInletDemand=null;
+
+function $(id){return document.getElementById(id)}
+function getTotalFish(){return Math.max(1,Number($('totalFish').value||25000))}
+function getSpeed(){return Math.max(1,Math.min(500,Number($('speedInput').value||8)))}
+function getCapFactor(){return Math.max(1,Number($('capacityFactor').value||8))}
+function getHeadTimeout(){return Math.max(0,Number($('headTimeout').value||0))}
+function specName(s){return String(s).toUpperCase()}
+function bucketLabel(b){return b==='light'?'小':b==='mid'?'中':'大'}
+function moduleOfSpec(spec){for(const k of Object.keys(MODULE_SPECS))if(MODULE_SPECS[k].includes(spec))return k;return 'A'}
+function bucketOf(spec,w){const [lo,hi]=SPECS[spec].range,span=hi-lo+1;if(w<lo+span/3)return 'light';if(w<lo+span*2/3)return 'mid';return 'heavy'}
+function laneAddress(mod,spec,bucket){return mod+'/'+spec+'/'+bucket}
+function capacityForSpec(spec){return Math.ceil(Math.max(...SPECS[spec].counts)*getCapFactor()/3)}
+function log(msg){const box=$('log');const d=document.createElement('div');d.textContent='['+new Date().toLocaleTimeString()+'] '+msg;box.appendChild(d);while(box.childNodes.length>150)box.removeChild(box.firstChild);box.scrollTop=box.scrollHeight}
+
+async function loadBatch(){
+  const seed=Number($('seedInput').value||42);
+  const total=getTotalFish();
+  log('加载种子批次 fish_seed_'+seed+' …');
+  const res=await fetch('/api/batch?seed='+seed+'&total='+total);
+  const data=await res.json();
+  batchFish=data.fish||[];
+  batchIndex=0;
+  batchLoaded=true;
+  log('批次就绪：'+batchFish.length+' 条');
+}
+
+function buildLayout(){
+  lanes={};laneList=[];modules={};
+  const defs=[{key:'A',x:520,y:105,title:'A模块：15P~40P'},{key:'B',x:520,y:570,title:'B模块：45P~90P'},{key:'C',x:520,y:1035,title:'C模块：100P~150P'}];
+  for(const def of defs){
+    modules[def.key]={key:def.key,x:def.x,y:def.y,title:def.title,specs:MODULE_SPECS[def.key],color:MODULE_COLOR[def.key],mergeX:1260,mergeY:def.y+210,busy:false,plan:null,box:{x:1385,y:def.y+170,count:0,weight:0,phase:'idle',sealTimer:0,finished:0}};
+    let laneY=def.y+56;
+    for(const spec of MODULE_SPECS[def.key]){
+      for(const bucket of BUCKETS){
+        const lane={id:spec+'_'+bucket,spec,bucket,module:def.key,x1:700,x2:1205,y:laneY,queue:[],visibleSlots:11,gateOpen:false,releaseRemaining:0,releaseTimer:0};
+        lanes[lane.id]=lane;laneList.push(lane);laneY+=20;
+      }
+      laneY+=16;
+    }
+  }
+}
+
+function createFish(spec,w,b,id){
+  return{id:id||0,spec,weight:w,bucket:b,color:BUCKET_COLOR[b],x:0,y:0,tx:0,ty:0,path:[],pause:0,speed:190,onDone:null,done:false,state:'moving',enterTime:simTime,direct:false};
+}
+function normalizeLane(lane){for(let i=0;i<lane.queue.length;i++){const f=lane.queue[i],idx=Math.min(i,lane.visibleSlots-1);f.tx=lane.x2-28-idx*34;f.ty=lane.y}}
+
+function prefixWeights(arr){const p=[0];for(const f of arr)p.push(p[p.length-1]+f.weight);return p}
+
+function findBestPlanForSpec(spec){
+  const qL=lanes[spec+'_light'].queue,qM=lanes[spec+'_mid'].queue,qH=lanes[spec+'_heavy'].queue;
+  if(qL.length+qM.length+qH.length<Math.min(...SPECS[spec].counts))return null;
+  const pL=prefixWeights(qL),pM=prefixWeights(qM),pH=prefixWeights(qH);
+  let best=null;
+  for(const cnt of SPECS[spec].counts){
+    for(let a=0;a<=Math.min(qL.length,cnt);a++){
+      for(let b=0;b<=Math.min(qM.length,cnt-a);b++){
+        const c=cnt-a-b;if(c<0||c>qH.length)continue;
+        const w=pL[a]+pM[b]+pH[c];
+        if(w>=TARGET_MIN&&w<=TARGET_MAX){
+          const score=Math.abs(w-TARGET_MID)+((a===0||b===0||c===0)?1.2:0);
+          if(!best||score<best.score)best={spec,count:cnt,weight:w,parts:{light:a,mid:b,heavy:c},score,module:moduleOfSpec(spec)};
+        }
+      }
+    }
+  }
+  return best;
+}
+function findBestPlanForModule(k){let best=null;for(const spec of MODULE_SPECS[k]){const p=findBestPlanForSpec(spec);if(p&&(!best||p.score<best.score))best=p}return best}
+
+function bestDiagnosticForSpec(spec){
+  const qL=lanes[spec+'_light'].queue,qM=lanes[spec+'_mid'].queue,qH=lanes[spec+'_heavy'].queue;
+  const total=qL.length+qM.length+qH.length,minCnt=Math.min(...SPECS[spec].counts);
+  if(total<minCnt)return {kind:'bad',msg:'条数不足 '+total+'/'+minCnt,short:'不足',needBucket:null,needCount:minCnt-total};
+  const exact=findBestPlanForSpec(spec);
+  if(exact)return {kind:'good',msg:'可装 '+exact.count+'条/'+exact.weight+'g',short:'可装',needBucket:null};
+  const pL=prefixWeights(qL),pM=prefixWeights(qM),pH=prefixWeights(qH);
+  let best=null;
+  for(const cnt of SPECS[spec].counts){
+    for(let a=0;a<=Math.min(qL.length,cnt);a++){
+      for(let b=0;b<=Math.min(qM.length,cnt-a);b++){
+        const c=cnt-a-b;if(c<0||c>qH.length)continue;
+        const w=pL[a]+pM[b]+pH[c];
+        const diff=w<TARGET_MIN?TARGET_MIN-w:w>TARGET_MAX?w-TARGET_MAX:0;
+        if(!best||diff*10+Math.abs(w-TARGET_MID)<best.score)best={count:cnt,weight:w,parts:{light:a,mid:b,heavy:c},diff,score:diff*10+Math.abs(w-TARGET_MID)};
+      }
+    }
+  }
+  if(!best)return {kind:'bad',msg:'等待更多鱼',short:'等待',needBucket:'mid'};
+  if(best.weight<TARGET_MIN)return {kind:'warn',msg:'偏轻 '+(TARGET_MIN-best.weight)+'g，需重鱼',short:'偏轻',needBucket:'heavy',needCount:1};
+  if(best.weight>TARGET_MAX)return {kind:'warn',msg:'超重 '+(best.weight-TARGET_MAX)+'g，需轻鱼',short:'超重',needBucket:'light',needCount:1};
+  return {kind:'good',msg:'接近可装',short:'接近',needBucket:null};
+}
+
+function collectDemands(){
+  const list=[];
+  for(const [modKey,m] of Object.entries(modules)){
+    if(m.busy&&m.plan){
+      for(const b of BUCKETS){
+        const lane=lanes[m.plan.spec+'_'+b];
+        if(lane.releaseRemaining>0){
+          list.push({priority:1,module:modKey,spec:m.plan.spec,bucket:b,count:lane.releaseRemaining,
+            address:laneAddress(modKey,m.plan.spec,b),laneId:lane.id,target:'box',reason:'装箱工位缺鱼'});
+        }
+      }
+    }else{
+      for(const spec of MODULE_SPECS[modKey]){
+        const d=bestDiagnosticForSpec(spec);
+        if(d.needBucket){
+          list.push({priority:3,module:modKey,spec,bucket:d.needBucket,count:d.needCount||1,
+            address:laneAddress(modKey,spec,d.needBucket),laneId:spec+'_'+d.needBucket,target:'lane',reason:d.short});
+        }
+      }
+    }
+  }
+  list.sort((a,b)=>a.priority-b.priority);
+  return list;
+}
+
+function findMatchingDemand(item){
+  const mod=moduleOfSpec(item.spec),bucket=bucketOf(item.spec,item.weight);
+  const demands=collectDemands();
+  return demands.find(d=>d.module===mod&&d.spec===item.spec&&d.bucket===bucket)||null;
+}
+
+function getInletDemand(){
+  const demands=collectDemands();
+  return demands.length?demands[0]:null;
+}
+
+function enqueueToLane(lane,f){
+  if(lane.queue.length>=capacityForSpec(lane.spec)){stats.fifoReflow++;return false}
+  f.state='queued';f.enterTime=simTime;lane.queue.push(f);normalizeLane(lane);return true;
+}
+
+function routeToAddress(item,demand){
+  const lane=lanes[demand.laneId],mod=modules[demand.module];
+  const bucket=bucketOf(item.spec,item.weight);
+  const f=createFish(item.spec,item.weight,bucket,item.id);
+  f.direct=true;stats.directRoute++;
+  f.x=55;f.y=70;
+  if(demand.target==='box'&&mod.busy&&mod.plan){
+    f.path=[{x:250,y:70},{x:380,y:70,pause:.12},{x:520,y:70},{x:mod.mergeX,y:70},{x:mod.mergeX,y:mod.mergeY},{x:mod.box.x-30,y:mod.mergeY}];
+    f.onDone=function(){
+      if(!mod.plan)return;
+      mod.plan.arrived++;mod.box.count++;mod.box.weight+=f.weight;
+      if(lane.releaseRemaining>0){lane.releaseRemaining--;if(lane.releaseRemaining<=0)lane.gateOpen=false}
+    };
+    log('定向推送 #'+item.id+' '+item.weight+'g → '+demand.address+' (直送装箱)');
+  }else{
+    f.path=[{x:250,y:70},{x:380,y:70,pause:.12},{x:520,y:mod.y+26},{x:660,y:mod.y+26},{x:675,y:lane.y}];
+    f.onDone=function(){
+      if(!enqueueToLane(lane,f))log('#'+item.id+' 料道已满，推送失败');
+      else log('定向推送 #'+item.id+' → '+demand.address+' (入料道)');
+    };
+  }
+  movingFish.push(f);
+}
+
+function spawnNormal(item){
+  const mod=modules[moduleOfSpec(item.spec)],lane=lanes[item.spec+'_'+bucketOf(item.spec,item.weight)];
+  const bucket=bucketOf(item.spec,item.weight);
+  const f=createFish(item.spec,item.weight,bucket,item.id);
+  f.x=55;f.y=70;
+  f.path=[{x:250,y:70},{x:335,y:70,pause:.2},{x:450,y:70},{x:500,y:mod.y+26},{x:660,y:mod.y+26},{x:675,y:lane.y}];
+  f.onDone=function(){
+    if(lane.queue.length>=capacityForSpec(item.spec)){stats.fifoReflow++;stats.overflow++;return}
+    f.state='queued';f.enterTime=simTime;lane.queue.push(f);normalizeLane(lane);
+  };
+  movingFish.push(f);
+}
+
+function spawnOutside(item){
+  const f=createFish(null,item.weight,'light',item.id);
+  f.color='#fb923c';f.x=55;f.y=70;
+  f.path=[{x:250,y:70},{x:610,y:70},{x:610,y:1450},{x:1580,y:1450}];
+  f.onDone=function(){stats.outsideTail++};
+  movingFish.push(f);
+}
+
+function nextBatchItem(){
+  if(!batchLoaded||batchIndex>=batchFish.length)return null;
+  const row=batchFish[batchIndex++];stats.input++;
+  if(row.outside||!row.spec)return {outside:true,weight:row.weight,id:row.id};
+  return {spec:row.spec,weight:row.weight,id:row.id};
+}
+
+function spawnAnimated(){
+  if(stats.input>=getTotalFish())return;
+  const item=nextBatchItem();if(!item)return;
+  if(item.outside){spawnOutside(item);log('规格外 #'+item.id+' '+item.weight+'g');return}
+  currentInletDemand=getInletDemand();
+  const demand=findMatchingDemand(item);
+  if(demand){
+    routeToAddress(item,demand);
+  }else{
+    spawnNormal(item);
+  }
+}
+
+function startPlan(moduleKey,plan){
+  const m=modules[moduleKey];m.busy=true;
+  m.plan={spec:plan.spec,count:plan.count,weight:plan.weight,parts:plan.parts,released:0,arrived:0};
+  m.box.count=0;m.box.weight=0;m.box.phase='filling';m.box.sealTimer=0;
+  for(const b of BUCKETS){
+    const lane=lanes[plan.spec+'_'+b];
+    lane.releaseRemaining=plan.parts[b];lane.releaseTimer=0;lane.gateOpen=lane.releaseRemaining>0;
+  }
+  log(specName(plan.spec)+' 开单：小'+plan.parts.light+'+中'+plan.parts.mid+'+大'+plan.parts.heavy+' → '+plan.count+'尾/'+plan.weight+'g');
+  const ds=collectDemands().filter(d=>d.module===moduleKey);
+  ds.forEach(d=>log('需求广播 → 地址 '+d.address+' 缺 '+d.count+' 条 ('+d.reason+')'));
+}
+
+function releaseOneFish(m,lane){
+  if(!lane.queue.length)return;
+  const f=lane.queue.shift();normalizeLane(lane);
+  f.state='moving';f.done=false;
+  f.path=[{x:lane.x2+36,y:lane.y},{x:m.mergeX,y:lane.y},{x:m.mergeX,y:m.mergeY},{x:m.box.x-35,y:m.mergeY}];
+  f.onDone=function(){if(!m.plan)return;m.plan.arrived++;m.box.count++;m.box.weight+=f.weight};
+  movingFish.push(f);m.plan.released++;
+}
+
+function processModule(k,dtScaled){
+  const m=modules[k];
+  if(!m.busy){
+    const p=findBestPlanForModule(k);if(p){startPlan(k,p);return}
+    return;
+  }
+  if(!m.plan)return;
+  let any=false;
+  for(const b of BUCKETS){
+    const lane=lanes[m.plan.spec+'_'+b];
+    if(lane.releaseRemaining>0){
+      any=true;lane.releaseTimer+=dtScaled;
+      if(lane.releaseTimer>=.14){lane.releaseTimer=0;releaseOneFish(m,lane);lane.releaseRemaining--;if(lane.releaseRemaining<=0)lane.gateOpen=false}
+    }
+  }
+  if(!any&&m.plan.arrived>=m.plan.count&&m.box.phase==='filling'){
+    m.box.phase='sealing';m.box.sealTimer=1;
+    log(specName(m.plan.spec)+' 进箱完成 '+m.box.count+'/'+m.plan.count+' 开始封箱');
+  }
+  if(m.box.phase==='sealing'){
+    m.box.sealTimer-=dtScaled;
+    if(m.box.sealTimer<=0){
+      cartonSeq++;stats.cartons++;m.box.finished++;
+      log('完成箱 #'+String(cartonSeq).padStart(4,'0')+'：'+m.plan.count+'尾/'+m.box.weight+'g');
+      m.busy=false;m.plan=null;m.box.count=0;m.box.weight=0;m.box.phase='idle';
+    }
+  }
+}
+
+function finishBatch(){
+  finished=true;running=false;
+  let tail=0;for(const lane of laneList)tail+=lane.queue.length;
+  stats.batchTail=tail;
+  log('批末完成：成盒 '+stats.cartons+'，定向推送 '+stats.directRoute+'，尾料 '+tail);
+  updateUI();
+}
+
+function update(dt){
+  const sp=getSpeed(),dtScaled=dt*sp;simTime+=dtScaled;beltPhase+=dtScaled*120;
+  if(running&&!finished){
+    spawnTimer+=dt;const interval=1/sp;
+    while(spawnTimer>=interval&&stats.input<getTotalFish()){spawnTimer-=interval;spawnAnimated()}
+    if(stats.input>=getTotalFish()&&!movingFish.length)finishBatch();
+  }
+  for(let i=movingFish.length-1;i>=0;i--){
+    moveAlongPath(movingFish[i],dtScaled);
+    if(movingFish[i].done)movingFish.splice(i,1);
+  }
+  for(const lane of laneList)for(const f of lane.queue){f.x+=(f.tx-f.x)*Math.min(1,dt*10);f.y+=(f.ty-f.y)*Math.min(1,dt*10)}
+  for(const k of Object.keys(modules))processModule(k,dtScaled);
+  updateUI();
+}
+
+function moveAlongPath(f,dtScaled){
+  if(f.pause>0){f.pause-=dtScaled;if(f.pause>0)return;f.pause=0}
+  if(!f.path||!f.path.length){if(f.onDone){const cb=f.onDone;f.onDone=null;cb()}f.done=true;return}
+  const n=f.path[0],dx=n.x-f.x,dy=n.y-f.y,dist=Math.hypot(dx,dy),step=f.speed*dtScaled;
+  if(dist<=step||dist===0){f.x=n.x;f.y=n.y;f.path.shift();if(n.pause)f.pause=n.pause;
+    if(!f.path.length){if(f.onDone){const cb=f.onDone;f.onDone=null;cb()}f.done=true}}
+  else{f.x+=dx/dist*step;f.y+=dy/dist*step}
+}
+
+function updateUI(){
+  let queued=0;for(const l of laneList)queued+=l.queue.length;
+  const total=getTotalFish();
+  $('sInput').textContent=stats.input;
+  $('progressBar').style.width=Math.min(100,stats.input/total*100)+'%';
+  $('sCartons').textContent=stats.cartons;
+  $('sDirect').textContent=stats.directRoute;
+  $('sWip').textContent=queued+movingFish.length;
+  $('sReflow').textContent=stats.outsideTail+stats.fifoReflow+stats.batchTail;
+  const demands=collectDemands();
+  $('sDemand').textContent=demands.length;
+  const inlet=getInletDemand();
+  $('inletBanner').innerHTML=inlet
+    ? '<strong>进料口广播地址：</strong><span class="demand-addr">'+inlet.address+'</span> 需要 '
+      +bucketLabel(inlet.bucket)+'鱼 × '+inlet.count+' <span class="pill info">'+inlet.reason+'</span>'
+    : '暂无活跃需求，常规 FIFO 入料';
+  $('demandPanel').innerHTML=demands.length?demands.slice(0,12).map(d=>
+    '<div class="demand-card'+(inlet&&inlet.address===d.address?' active':'')+'">'+
+    '<span class="pill '+(d.priority===1?'good':'warn')+'">P'+d.priority+'</span> '+
+    '<span class="demand-addr">'+d.address+'</span><br>'+
+    bucketLabel(d.bucket)+' × '+d.count+' · '+d.reason+' · 目标:'+(d.target==='box'?'装箱工位':'料道')+
+    '</div>').join(''):'<div style="color:#64748b;font-size:12px">暂无需求</div>';
+  $('moduleState').innerHTML=Object.entries(modules).map(([k,m])=>{
+    if(!m.plan)return '<div class="result-line"><span>'+m.title+'</span><span class="pill good">空闲</span></div>';
+    const p=m.plan;
+    return '<div class="result-line"><span>'+m.title+'</span><span class="pill info">'+specName(p.spec)+'</span></div>'+
+      '<div style="font-size:12px;padding:4px 0 8px;border-bottom:1px solid #e5edf7">'+
+      '已进 <strong>'+m.box.count+'/'+p.count+'</strong> 尾 · '+m.box.weight+'g · '+(m.box.phase==='sealing'?'封箱中':'填箱中')+'<br>'+
+      '还需：小'+(p.parts.light-(p.released||0))+' 中'+(p.parts.mid-(p.released||0))+' 大'+(p.parts.heavy-(p.released||0))+
+      '</div>';
+  }).join('');
+}
+
+function frame(ts){if(!lastTs)lastTs=ts;const dt=Math.min(.05,(ts-lastTs)/1000);lastTs=ts;if(running)update(dt);draw();requestAnimationFrame(frame)}
+
+async function reset(){
+  running=false;finished=false;lastTs=0;beltPhase=0;spawnTimer=0;simTime=0;cartonSeq=0;
+  movingFish=[];stats={input:0,cartons:0,directRoute:0,outsideTail:0,fifoReflow:0,batchTail:0,overflow:0,timeout:0};
+  buildLayout();await loadBatch();updateUI();draw();log('已重置，批次已加载。');
+}
+
+async function fastRun(){
+  running=false;await loadBatch();
+  const t0=performance.now();
+  while(stats.input<getTotalFish()){
+    const item=nextBatchItem();if(!item)break;
+    if(item.outside){stats.outsideTail++;continue}
+    const lane=lanes[item.spec+'_'+bucketOf(item.spec,item.weight)];
+    const f=createFish(item.spec,item.weight,bucketOf(item.spec,item.weight),item.id);
+    f.state='queued';lane.queue.push(f);
+    if(findMatchingDemand(item))stats.directRoute++;
+    if(stats.input%100===0)for(const k of Object.keys(modules)){const p=findBestPlanForModule(k);if(p&&!modules[k].busy)startPlan(k,p)}
+    for(const k of Object.keys(modules))processModule(k,.2);
+  }
+  finishBatch();
+  log('快速跑完 '+getTotalFish()+' 条，用时 '+((performance.now()-t0)|0)+'ms');
+  draw();
+}
+
+/* ---- 绘制（精简自样例） ---- */
+function draw(){if(!ctx)return;ctx.clearRect(0,0,canvas.width,canvas.height);drawBg();
+  drawUpstream();for(const m of Object.values(modules))drawModule(m);drawTail();drawFish();drawFooter()}
+function drawBg(){ctx.fillStyle='#f8fafc';ctx.fillRect(0,0,canvas.width,canvas.height)}
+function drawUpstream(){
+  drawConv(40,70,210,42,true,'#dbeafe','#93c5fd','进料口');
+  drawConv(285,70,90,42,true,'#dbeafe','#93c5fd','称重');
+  roundRect(405,52,130,76,12,'#dbeafe','#60a5fa',1.5);
+  ctx.fillStyle='#1e40af';ctx.font='bold 13px Arial';ctx.fillText('需求匹配/推送',415,78);
+  if(currentInletDemand||getInletDemand()){
+    const d=getInletDemand();if(d){ctx.fillStyle='#92400e';ctx.font='11px Arial';ctx.fillText('→ '+d.address,415,98)}
+  }
+  for(const m of Object.values(modules))drawPipe([{x:536,y:91},{x:545,y:91},{x:545,y:m.y+26},{x:660,y:m.y+26}],'#bfdbfe',10);
+}
+function drawModule(m){
+  roundRect(m.x,m.y,1070,400,18,'#fff','#cbd5e1',1.5);
+  ctx.fillStyle=m.color;roundTop(m.x,m.y,1070,34,18);ctx.fill();
+  ctx.fillStyle='#fff';ctx.font='bold 17px Arial';ctx.fillText(m.title,m.x+14,m.y+22);
+  let gy=m.y+56;
+  for(const spec of m.specs){
+    roundRect(m.x+14,gy-10,990,62,10,'#fff','#dbe3ef',1);
+    ctx.fillStyle=m.color;roundRect(m.x+22,gy-3,74,48,10,m.color,m.color,1);
+    ctx.fillStyle='#fff';ctx.font='bold 16px Arial';ctx.fillText(specName(spec),m.x+34,gy+18);
+    for(const b of BUCKETS){const lane=lanes[spec+'_'+b];drawLane(lane,m);drawGate(lane);drawPipe([{x:lane.x2+32,y:lane.y},{x:m.mergeX,y:lane.y}],'#bbf7d0',5)}
+    gy+=76;
+  }
+  drawBox(m);
+}
+function drawLane(lane,m){
+  const cap=capacityForSpec(lane.spec);
+  roundRect(m.x+112,lane.y-8,30,16,8,BUCKET_COLOR[lane.bucket],'#94a3b8',1);
+  ctx.fillStyle='#0f172a';ctx.font='bold 11px Arial';ctx.fillText(bucketLabel(lane.bucket),m.x+118,lane.y+4);
+  drawConv(lane.x1,lane.y-8,lane.x2-lane.x1,16,true,'#dcfce7','#bbf7d0',null);
+  ctx.fillStyle='#64748b';ctx.font='10px Arial';ctx.fillText(lane.queue.length+'/'+cap,lane.x1+4,lane.y-11);
+}
+function drawGate(lane){const x=lane.x2+8,y=lane.y-10;roundRect(x,y,24,20,5,lane.gateOpen?'#dcfce7':'#f1f5f9',lane.gateOpen?'#16a34a':'#94a3b8',1)}
+function drawBox(m){
+  const b=m.box,x=b.x,y=b.y;
+  roundRect(x,y,145,88,14,'#fffbeb','#fcd34d',1.2);
+  ctx.fillStyle='#8d5b00';ctx.font='bold 14px Arial';ctx.fillText('装箱工位',x+12,y+20);
+  const txt=m.plan?specName(m.plan.spec)+' '+b.count+'/'+m.plan.count:'等待';
+  ctx.fillStyle='#5d4a2b';ctx.font='12px Arial';ctx.fillText(txt,x+82,y+38);
+  roundRect(x+82,y+48,50,9,5,'#fde68a','#f6c453',1);
+  if(m.plan)roundRect(x+82,y+48,50*(b.count/Math.max(1,m.plan.count)),9,5,'#f59e0b','#f59e0b',1);
+  ctx.fillText(b.weight+'g',x+82,y+68);
+  roundRect(x+175,y,100,88,14,'#eff6ff','#93c5fd',1.2);
+  ctx.fillStyle='#1d4ed8';ctx.font='bold 13px Arial';ctx.fillText('成品 '+b.finished+'箱',x+188,y+48);
+}
+function drawTail(){
+  roundRect(1480,1388,215,100,16,'#fff7ed','#fdba74',1.5);
+  ctx.fillStyle='#9a3412';ctx.font='bold 14px Arial';ctx.fillText('规格外尾料箱',1498,1418);
+  ctx.fillText(String(stats.outsideTail),1580,1418);
+}
+function drawFish(){
+  if($('drawMode').value==='light'&&stats.input>8000)return;
+  for(const lane of laneList)for(let i=0;i<Math.min(lane.queue.length,lane.visibleSlots);i++){
+    const f=lane.queue[i];drawOneFish(f.x,f.y,f.color,f.weight,f.direct,f.id);
+  }
+  for(const f of movingFish)drawOneFish(f.x,f.y,f.color,f.weight,f.direct,f.id);
+}
+function drawOneFish(x,y,color,w,direct,id){
+  ctx.save();ctx.translate(x,y);
+  if(direct){ctx.strokeStyle='#16a34a';ctx.lineWidth=2;ctx.beginPath();ctx.arc(0,0,14,0,Math.PI*2);ctx.stroke()}
+  ctx.fillStyle=color||'#7dd3fc';ctx.beginPath();ctx.ellipse(0,0,11,6,0,0,Math.PI*2);ctx.fill();
+  ctx.fillStyle='#1e293b';ctx.font='9px Arial';ctx.fillText(String(w),-10,-8);
+  if(id)ctx.fillText('#'+id,-10,10);
+  ctx.restore();
+}
+function drawFooter(){ctx.fillStyle='#64748b';ctx.font='12px Arial';ctx.fillText('绿圈=定向推送 · 地址格式：模块/规格/区段 · 数据源：/api/batch 种子批次',24,1568)}
+function drawConv(x,y,w,h,hor,base,stripe,label){roundRect(x,y,w,h,7,base,'#97a9bf',1);if(label){ctx.fillStyle='#45637f';ctx.font='11px Arial';ctx.fillText(label,x+6,y-4)}}
+function drawPipe(pts,color,w){ctx.strokeStyle=color;ctx.lineWidth=w;ctx.beginPath();ctx.moveTo(pts[0].x,pts[0].y);for(let i=1;i<pts.length;i++)ctx.lineTo(pts[i].x,pts[i].y);ctx.stroke()}
+function roundTop(x,y,w,h,r){ctx.beginPath();ctx.moveTo(x+r,y);ctx.lineTo(x+w-r,y);ctx.arcTo(x+w,y,x+w,y+r,r);ctx.lineTo(x+w,y+h);ctx.lineTo(x,y+h);ctx.lineTo(x,y+r);ctx.arcTo(x,y,x+r,y,r)}
+function roundRect(x,y,w,h,r,fill,stroke,lw){ctx.beginPath();ctx.moveTo(x+r,y);ctx.arcTo(x+w,y,x+w,y+h,r);ctx.arcTo(x+w,y+h,x,y+h,r);ctx.arcTo(x,y+h,x,y,r);ctx.arcTo(x,y,x+w,y,r);if(fill){ctx.fillStyle=fill;ctx.fill()}if(stroke){ctx.strokeStyle=stroke;ctx.lineWidth=lw||1;ctx.stroke()}}
+
+window.addEventListener('load',function(){
+  canvas=$('scene');ctx=canvas.getContext('2d');
+  $('startBtn').onclick=async()=>{if(!batchLoaded)await loadBatch();running=true;log('开始动画监控')};
+  $('pauseBtn').onclick=()=>{running=false;log('暂停')};
+  $('fastBtn').onclick=fastRun;
+  $('resetBtn').onclick=reset;
+  reset();requestAnimationFrame(frame);
+});
+</script>
+</body>
+</html>
