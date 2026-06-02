@@ -294,6 +294,19 @@ class FishTracker:
                     }
                 )
 
+    def remaining_records(self) -> list[dict]:
+        return [
+            {
+                "fish_id": t.fish_id,
+                "weight": t.weight,
+                "spec": t.spec or "",
+                "rounds": t.rounds,
+                "status": t.status,
+                "reflow_reasons": list(t.reflow_reasons),
+            }
+            for t in sorted(self.unmatched, key=lambda x: x.fish_id)
+        ]
+
 
 # ---------------------------------------------------------------------------
 # 料道 & 装箱
@@ -472,6 +485,18 @@ class SchedulerEngine:
             }
             for c in self.cartons[-8:]
         ]
+        carton_records = [
+            {
+                "seq": idx + 1,
+                "spec": c.spec,
+                "count": c.count,
+                "weight": c.weight,
+                "parts": dict(c.parts),
+                "fish_ids": [f.id for f in c.fish],
+            }
+            for idx, c in enumerate(self.cartons)
+        ]
+        remaining_fish = self.tracker.remaining_records() if self.finished else []
         return {
             "tick": self.tick,
             "finished": self.finished,
@@ -490,6 +515,9 @@ class SchedulerEngine:
             "outside_queue": len(self.lanes.outside),
             "modules": modules,
             "recent_cartons": recent_cartons,
+            "carton_records": carton_records,
+            "remaining_fish": remaining_fish,
+            "remaining_count": len(remaining_fish),
             "events": self.events[-40:],
             "history": self.history[-120:],
             "rounds_top": dict(sorted(rounds_dist.items(), key=lambda x: int(x[0]))[:12]),
@@ -591,6 +619,53 @@ class SchedulerEngine:
         if len(self.history) > 500:
             self.history.pop(0)
 
+    def _save_cartons_csv(self, path: Path) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("w", newline="", encoding="utf-8-sig") as f:
+            writer = csv.DictWriter(
+                f,
+                fieldnames=[
+                    "carton_seq",
+                    "spec",
+                    "count",
+                    "weight",
+                    "small",
+                    "medium",
+                    "large",
+                    "fish_ids",
+                ],
+            )
+            writer.writeheader()
+            for idx, plan in enumerate(self.cartons, start=1):
+                writer.writerow(
+                    {
+                        "carton_seq": idx,
+                        "spec": plan.spec,
+                        "count": plan.count,
+                        "weight": plan.weight,
+                        "small": plan.parts.get("small", 0),
+                        "medium": plan.parts.get("medium", 0),
+                        "large": plan.parts.get("large", 0),
+                        "fish_ids": "|".join(str(f.id) for f in plan.fish),
+                    }
+                )
+
+    def _save_remaining_csv(self, path: Path) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("w", newline="", encoding="utf-8-sig") as f:
+            writer = csv.DictWriter(
+                f,
+                fieldnames=["fish_id", "weight", "spec", "rounds", "status", "reflow_reasons"],
+            )
+            writer.writeheader()
+            for row in self.tracker.remaining_records():
+                writer.writerow(
+                    {
+                        **row,
+                        "reflow_reasons": "|".join(row["reflow_reasons"]),
+                    }
+                )
+
     def process_one(self) -> bool:
         if self._cursor >= self.total_fish:
             return False
@@ -668,9 +743,20 @@ class SchedulerEngine:
         self.stats.unmatched_count = len(self.tracker.unmatched)
         self.finished = True
         self._record_history()
-        report_path = _root / "data" / f"run_report_seed_{self.seed}.csv"
+        data_dir = _root / "data"
+        report_path = data_dir / f"run_report_seed_{self.seed}.csv"
+        cartons_path = data_dir / f"cartons_seed_{self.seed}.csv"
+        remaining_path = data_dir / f"remaining_seed_{self.seed}.csv"
         self.tracker.save_report(report_path)
-        self._event("done", "批处理完成，报告已保存", report=str(report_path))
+        self._save_cartons_csv(cartons_path)
+        self._save_remaining_csv(remaining_path)
+        self._event(
+            "done",
+            "批处理完成，报告已保存",
+            report=str(report_path),
+            cartons=str(cartons_path),
+            remaining=str(remaining_path),
+        )
 
     def print_report(self) -> None:
         rounds_dist: dict[int, int] = {}
