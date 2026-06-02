@@ -428,10 +428,32 @@
     }
 
     function updateUI(state) {
-      if (state.status === "idle") {
+      if (state.status === "idle" && !state.running) {
         setStatus("idle");
+        $("btnStart").disabled = false;
+        $("btnPause").disabled = true;
+        $("btnResume").disabled = true;
+        $("btnStop").disabled = true;
         return;
       }
+      if (!state.running && !state.finished) {
+        setStatus(state.paused ? "paused" : "idle");
+        if (state.input_count != null) {
+          $("sInput").textContent = state.input_count;
+          const total = state.total_fish || +$("total").value || 1;
+          $("sInputHint").textContent = "/ " + total;
+          const pct = Math.min(100, (state.input_count / total) * 100);
+          $("progressBar").style.width = pct + "%";
+          $("progressText").textContent = pct.toFixed(1) + "%";
+        }
+        $("btnStart").disabled = false;
+        $("btnPause").disabled = true;
+        $("btnResume").disabled = !!state.paused;
+        $("btnStop").disabled = true;
+        return;
+      }
+      if (state.seed != null) $("seed").value = state.seed;
+      if (state.total_fish != null) $("total").value = state.total_fish;
       setStatus(state.status);
       $("sTick").textContent = state.tick ?? 0;
       $("sInput").textContent = state.input_count ?? 0;
@@ -474,16 +496,17 @@
       try {
         const state = await api("/api/state");
         updateUI(state);
-        if (state.finished || state.status === "idle") {
-          clearInterval(pollTimer);
-          pollTimer = null;
-        }
       } catch (e) {
         console.error(e);
       }
     }
 
     $("btnStart").onclick = async () => {
+      const cur = await api("/api/state");
+      if (cur.running) {
+        updateUI(cur);
+        return;
+      }
       $("logBox").innerHTML = "";
       lastEventCount = 0;
       const body = {
@@ -496,8 +519,6 @@
       const res = await api("/api/start", body);
       if (!res.ok) { alert(res.error || "启动失败"); return; }
       updateUI(res.state);
-      if (pollTimer) clearInterval(pollTimer);
-      pollTimer = setInterval(poll, 200);
     };
 
     $("btnPause").onclick = () => api("/api/pause").then(r => updateUI(r.state));
@@ -509,6 +530,8 @@
       $("total").value = cfg.default_total;
       $("moveTimeout").value = cfg.default_move_timeout;
     });
+    if (pollTimer) clearInterval(pollTimer);
+    pollTimer = setInterval(poll, 200);
     poll();
   </script>
 </body>

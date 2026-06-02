@@ -128,6 +128,86 @@ let movingFish=[],lanes={},laneList=[],modules={},finished=false;
 let batchFish=[],batchIndex=0,batchLoaded=false;
 let stats={input:0,cartons:0,directRoute:0,outsideTail:0,fifoReflow:0,batchTail:0,overflow:0,timeout:0};
 let currentInletDemand=null;
+let syncPollTimer=null,serverFinishedHandled=false,serverSessionKey='';
+let serverInputCount=0,intakeSynced=false;
+
+async function apiJson(path,body){
+  const opt=body?{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}:{};
+  const res=await fetch(path,opt);
+  return res.json();
+}
+
+async function ensureBatchForSession(seed,total){
+  const key=seed+'_'+total;
+  if(batchLoaded&&serverSessionKey===key)return;
+  $('seedInput').value=seed;
+  $('totalFish').value=total;
+  await loadBatch();
+  serverSessionKey=key;
+}
+
+function spawnBatchRow(row){
+  if(row.outside||!row.spec){
+    spawnOutside({outside:true,weight:row.weight,id:row.id});
+    log('规格外 #'+row.id+' '+row.weight+'g');
+    return;
+  }
+  const item={spec:row.spec,weight:row.weight,id:row.id};
+  currentInletDemand=getInletDemand();
+  const demand=findMatchingDemand(item);
+  if(demand)routeToAddress(item,demand);
+  else spawnNormal(item);
+}
+
+function syncIntakePosition(target,allowSkip){
+  serverInputCount=target;
+  stats.input=target;
+  if(allowSkip&&!intakeSynced&&target>batchIndex){
+    batchIndex=target;
+    intakeSynced=true;
+  }
+}
+
+async function applyServerState(state,allowSkip){
+  if(!state||(state.status==='idle'&&!state.running)||(!state.running&&!state.finished&&!state.paused)){
+    running=false;
+    if(!state||state.status==='idle'||(!state.running&&!state.finished)){
+      if(!state||state.status==='idle'){finished=false;serverFinishedHandled=false;intakeSynced=false}
+    }
+    if(state&&state.input_count!=null)syncIntakePosition(state.input_count,false);
+    return;
+  }
+  const seed=state.seed!=null?state.seed:Number($('seedInput').value||42);
+  const total=state.total_fish||getTotalFish();
+  await ensureBatchForSession(seed,total);
+  if(state.running&&!state.paused&&!state.finished)running=true;
+  else running=false;
+  finished=!!state.finished;
+  if(state.paused)running=false;
+  syncIntakePosition(state.input_count||0,!!allowSkip);
+  if(state.finished&&!serverFinishedHandled){
+    serverFinishedHandled=true;
+    batchIndex=state.input_count||batchIndex;
+    intakeSynced=true;
+    let tail=0;for(const lane of laneList)tail+=lane.queue.length;
+    stats.batchTail=tail;
+    log('批末完成（与统计面板同步）：入料 '+(state.input_count||0)+'/'+total);
+  }
+  if(!state.finished)serverFinishedHandled=false;
+}
+
+async function pollServerState(){
+  try{
+    const state=await apiJson('/api/state');
+    await applyServerState(state,false);
+  }catch(e){console.error(e)}
+}
+
+function startSyncPoll(){
+  if(syncPollTimer)clearInterval(syncPollTimer);
+  syncPollTimer=setInterval(pollServerState,200);
+  pollServerState();
+}
 
 function $(id){return document.getElementById(id)}
 function getTotalFish(){return Math.max(1,Number($('totalFish').value||25000))}
@@ -151,6 +231,7 @@ async function loadBatch(){
   batchFish=data.fish||[];
   batchIndex=0;
   batchLoaded=true;
+  serverSessionKey=seed+'_'+total;
   log('批次就绪：'+batchFish.length+' 条');
 }
 
@@ -374,22 +455,7 @@ function spawnOutside(item){
 
 function nextBatchItem(){
   if(!batchLoaded||batchIndex>=batchFish.length)return null;
-  const row=batchFish[batchIndex++];stats.input++;
-  if(row.outside||!row.spec)return {outside:true,weight:row.weight,id:row.id};
-  return {spec:row.spec,weight:row.weight,id:row.id};
-}
-
-function spawnAnimated(){
-  if(stats.input>=getTotalFish())return;
-  const item=nextBatchItem();if(!item)return;
-  if(item.outside){spawnOutside(item);log('规格外 #'+item.id+' '+item.weight+'g');return}
-  currentInletDemand=getInletDemand();
-  const demand=findMatchingDemand(item);
-  if(demand){
-    routeToAddress(item,demand);
-  }else{
-    spawnNormal(item);
-  }
+  return batchFish[batchIndex++];
 }
 
 function startPlan(moduleKey,plan){
@@ -454,9 +520,13 @@ function finishBatch(){
 function update(dt){
   const sp=getSpeed(),dtScaled=dt*sp;simTime+=dtScaled;beltPhase+=dtScaled*120;
   if(running&&!finished){
-    spawnTimer+=dt;const interval=1/sp;
-    while(spawnTimer>=interval&&stats.input<getTotalFish()){spawnTimer-=interval;spawnAnimated()}
-    if(stats.input>=getTotalFish()&&!movingFish.length)finishBatch();
+    spawnTimer+=dt;
+    const interval=1/sp;
+    if(spawnTimer>=interval&&batchIndex<serverInputCount&&batchIndex<batchFish.length){
+      spawnTimer-=interval;
+      spawnBatchRow(batchFish[batchIndex++]);
+    }
+    if(batchIndex>=getTotalFish()&&batchIndex>=serverInputCount&&!movingFish.length&&finished)finishBatch();
   }
   for(let i=movingFish.length-1;i>=0;i--){
     moveAlongPath(movingFish[i],dtScaled);
@@ -479,8 +549,9 @@ function moveAlongPath(f,dtScaled){
 function updateUI(){
   let queued=0;for(const l of laneList)queued+=l.queue.length;
   const total=getTotalFish();
-  $('sInput').textContent=stats.input;
-  $('progressBar').style.width=Math.min(100,stats.input/total*100)+'%';
+  const shownInput=Math.max(serverInputCount,stats.input);
+  $('sInput').textContent=shownInput;
+  $('progressBar').style.width=Math.min(100,shownInput/total*100)+'%';
   $('sCartons').textContent=stats.cartons;
   $('sDirect').textContent=stats.directRoute;
   $('sWip').textContent=queued+movingFish.length;
@@ -505,28 +576,53 @@ function updateUI(){
 
 function frame(ts){if(!lastTs)lastTs=ts;const dt=Math.min(.05,(ts-lastTs)/1000);lastTs=ts;if(running)update(dt);draw();requestAnimationFrame(frame)}
 
-async function reset(){
+async function resetLocal(){
   running=false;finished=false;lastTs=0;beltPhase=0;spawnTimer=0;simTime=0;cartonSeq=0;
+  serverFinishedHandled=false;serverSessionKey='';serverInputCount=0;intakeSynced=false;
   movingFish=[];stats={input:0,cartons:0,directRoute:0,outsideTail:0,fifoReflow:0,batchTail:0,overflow:0,timeout:0};
-  buildLayout();await loadBatch();updateUI();draw();log('已重置，批次已加载。');
+  batchIndex=0;
+  buildLayout();await loadBatch();updateUI();draw();
+}
+
+async function reset(){
+  await apiJson('/api/stop');
+  await resetLocal();
+  log('已重置，批次已加载。');
 }
 
 async function fastRun(){
-  running=false;await loadBatch();
-  const t0=performance.now();
-  while(stats.input<getTotalFish()){
-    const item=nextBatchItem();if(!item)break;
-    if(item.outside){stats.outsideTail++;continue}
-    const lane=lanes[item.spec+'_'+bucketOf(item.spec,item.weight)];
-    const f=createFish(item.spec,item.weight,bucketOf(item.spec,item.weight),item.id);
-    f.state='queued';lane.queue.push(f);
-    if(findMatchingDemand(item))stats.directRoute++;
-    if(stats.input%100===0)for(const k of Object.keys(modules)){const p=findBestPlanForModule(k);if(p&&!modules[k].busy)startPlan(k,p)}
-    for(const k of Object.keys(modules))processModule(k,.2);
+  running=false;
+  if(!batchLoaded)await loadBatch();
+  const body={
+    seed:Number($('seedInput').value||42),
+    total:getTotalFish(),
+    move_timeout:getHeadTimeout(),
+    speed:Math.max(getSpeed(),200)
+  };
+  const cur=await apiJson('/api/state');
+  if(!cur.running){
+    const res=await apiJson('/api/start',body);
+    if(!res.ok){log(res.error||'启动失败');return}
   }
-  finishBatch();
-  log('快速跑完 '+getTotalFish()+' 条，用时 '+((performance.now()-t0)|0)+'ms');
+  log('快速跑完：后端加速运行…');
+  while(true){
+    const state=await apiJson('/api/state');
+    running=false;
+    finished=!!state.finished;
+    serverInputCount=state.input_count||0;
+    stats.input=serverInputCount;
+    batchIndex=serverInputCount;
+    intakeSynced=true;
+    if(state.finished&&!serverFinishedHandled){
+      serverFinishedHandled=true;
+      log('批末完成（与统计面板同步）：入料 '+serverInputCount+'/'+getTotalFish());
+    }
+    updateUI();
+    if(state.finished)break;
+    await new Promise(r=>setTimeout(r,80));
+  }
   draw();
+  log('快速跑完 '+getTotalFish()+' 条（入料已与统计面板同步）');
 }
 
 /* ---- 绘制（精简自样例） ---- */
@@ -606,13 +702,56 @@ function drawPipe(pts,color,w){ctx.strokeStyle=color;ctx.lineWidth=w;ctx.beginPa
 function roundTop(x,y,w,h,r){ctx.beginPath();ctx.moveTo(x+r,y);ctx.lineTo(x+w-r,y);ctx.arcTo(x+w,y,x+w,y+r,r);ctx.lineTo(x+w,y+h);ctx.lineTo(x,y+h);ctx.lineTo(x,y+r);ctx.arcTo(x,y,x+r,y,r)}
 function roundRect(x,y,w,h,r,fill,stroke,lw){ctx.beginPath();ctx.moveTo(x+r,y);ctx.arcTo(x+w,y,x+w,y+h,r);ctx.arcTo(x+w,y+h,x,y+h,r);ctx.arcTo(x,y+h,x,y,r);ctx.arcTo(x,y,x+w,y,r);if(fill){ctx.fillStyle=fill;ctx.fill()}if(stroke){ctx.strokeStyle=stroke;ctx.lineWidth=lw||1;ctx.stroke()}}
 
-window.addEventListener('load',function(){
+window.addEventListener('load',async function(){
   canvas=$('scene');ctx=canvas.getContext('2d');
-  $('startBtn').onclick=async()=>{if(!batchLoaded)await loadBatch();running=true;log('开始动画监控')};
-  $('pauseBtn').onclick=()=>{running=false;log('暂停')};
+  $('startBtn').onclick=async()=>{
+    if(!batchLoaded)await loadBatch();
+    const cur=await apiJson('/api/state');
+    if(cur.running){
+      if(cur.paused){
+        const res=await apiJson('/api/resume');
+        if(!res.ok){log(res.error||'继续失败');return}
+        await applyServerState(res.state,false);
+        log('继续运行（与统计面板同步）');
+      }else{
+        await applyServerState(cur,true);
+        log('已接入运行中的模拟（与统计面板同步）');
+      }
+      return;
+    }
+    const body={
+      seed:Number($('seedInput').value||42),
+      total:getTotalFish(),
+      move_timeout:getHeadTimeout(),
+      speed:getSpeed()
+    };
+    const res=await apiJson('/api/start',body);
+    if(!res.ok){log(res.error||'启动失败');return}
+    intakeSynced=false;
+    batchIndex=0;
+    spawnTimer=0;
+    await applyServerState(res.state,false);
+    log('开始动画监控（与统计面板同步）');
+  };
+  $('pauseBtn').onclick=async()=>{
+    const res=await apiJson('/api/pause');
+    running=false;
+    await applyServerState(res.state,false);
+    log('暂停（与统计面板同步）');
+  };
   $('fastBtn').onclick=fastRun;
   $('resetBtn').onclick=reset;
-  reset();requestAnimationFrame(frame);
+  buildLayout();
+  const state=await apiJson('/api/state');
+  if(state.running||state.finished){
+    await applyServerState(state,true);
+    log(state.finished?'已接入已完成批次':'已接入运行中的模拟');
+  }else{
+    await loadBatch();
+    updateUI();
+  }
+  startSyncPoll();
+  requestAnimationFrame(frame);
 });
 </script>
 </body>
