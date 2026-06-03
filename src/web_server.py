@@ -15,86 +15,44 @@
   默认端口 8765（环境变量 WEB_PORT 可改）
 
   页面：
-    /         统计面板 — 后台 SchedulerEngine 逐步仿真，轮询 /api/state
-    /monitor  FIFO 动画 — 浏览器内独立仿真，批次来自 /api/batch
+    /         统计面板 — 仿真控制、成盒/尾料在线查看与 CSV 导出
+    /monitor  FIFO 动画 — 与统计面板共用 /api 状态与入料进度
 
 -----------------------------------------------------------------------------
-1. 如何记录成盒鱼的数据
+1. 成盒鱼数据记录与查看（统计面板 /）
 -----------------------------------------------------------------------------
-  数据在封箱瞬间产生，有三层可读写：
+  封箱时 SchedulerEngine 写入 cartons；批末 finish_batch() 导出：
+    data/cartons_seed_{seed}.csv
+    字段：carton_seq, spec, count, weight, small, medium, large, fish_ids
 
-  (A) 内存（运行中）
-      SchedulerEngine._try_pack_all() 每封一箱：
-        - self.cartons 追加 BoxPlan（spec/count/weight/parts/fish）
-        - self.stats.cartons / packed_fish 累加
-        - events 追加 kind=pack 事件
-      Web 轮询 /api/state 可读：
-        - carton_records  全部成盒列表（含 fish_ids）
-        - recent_cartons  最近 8 盒摘要
+  接口：
+    GET /api/cartons?seed=42        JSON（records）
+    GET /api/cartons.csv?seed=42    下载 CSV
+    GET /api/state                  运行中可读 carton_records / recent_cartons
 
-  (B) 批末 CSV（finish_batch 自动写）
-      data/cartons_seed_{seed}.csv
-      字段：carton_seq, spec, count, weight, small, medium, large, fish_ids
-
-  (C) HTTP 接口
-      GET /api/cartons?seed=42       JSON 全部成盒
-      GET /api/cartons.csv?seed=42   下载 CSV
-
-  【若要新增字段】例如封箱时间、操作员：
-    1. 在 Scheduler_Engine.BoxPlan 或 _try_pack_all() 封箱处写入新字段
-    2. 同步 _save_cartons_csv() 的 fieldnames 与 writerow
-    3. 同步 get_snapshot() 里 carton_records 的字典结构
-    4. （可选）同步 web_server._cartons_from_disk() 的 JSON 映射
+  页面：统计面板「成盒数据」在线查看；弹窗内「导出 CSV」下载。
+  扩展字段：改 _try_pack_all()、_save_cartons_csv()、get_snapshot()。
 
 -----------------------------------------------------------------------------
-2. 25000 条跑完后剩余未处理鱼
+2. 25000 跑完后未成盒尾料
 -----------------------------------------------------------------------------
-  入料 25000 条结束后，SimulationRunner 调用 finish_batch()：
-    - 继续扫尾封箱（处理 reflow 队列）
-    - 料道/回流/规格外仍未装箱的鱼 → tracker.unmatched（尾料）
-    - 自动导出三份文件到 data/：
+  finish_batch() 写入 tracker.unmatched，并导出：
+    data/remaining_seed_{seed}.csv
+    data/run_report_seed_{seed}.csv（全批次追踪）
 
-      run_report_seed_{seed}.csv    每条鱼全生命周期（fish_id/weight/spec/status…）
-      remaining_seed_{seed}.csv     仅未装箱尾料（fish_id/weight/spec/status…）
-      cartons_seed_{seed}.csv       成盒明细（见上一节）
+  接口：
+    GET /api/remaining?seed=42       JSON（fish）
+    GET /api/remaining.csv?seed=42   下载 CSV
+    GET /api/state                   finished 时含 remaining_fish
 
-  HTTP 读取：
-    GET /api/remaining?seed=42      JSON 尾料列表
-    GET /api/remaining.csv?seed=42  下载尾料 CSV
-    GET /api/state                  finished=true 时含 remaining_fish / remaining_count
-
-  典型 status：unmatched_tail（料道剩余）、unmatched_reflow（回流未再装）、
-               unmatched_outside（规格外）
+  页面：统计面板「尾料数据」在线查看；弹窗内「导出 CSV」下载。
+  status：unmatched_tail / unmatched_reflow / unmatched_outside
 
 -----------------------------------------------------------------------------
-3. FIFO 页「活跃需求」为何只有几个而不是 54 个
+3. FIFO 动画页 /monitor
 -----------------------------------------------------------------------------
-  地址规则：模块/规格/区段，例如 A/15p/light
-  18 规格 × 小/中/大 = 54 路，每路都应参与缺鱼诊断与广播。
-
-  【原问题】fifo_monitor.html 的 collectDemands() 逻辑缺陷：
-    - 模块 busy 时：仅 releaseRemaining>0 的 3 路才入列
-    - 模块 idle 时：仅 bestDiagnosticForSpec 返回 needBucket 的 1 路才入列
-    - 可装盒、料道正常、无需补鱼的地址被跳过 → 统计只有个位数
-
-  【修复】collectDemands() 改为遍历全部 54 路，每路输出监控条目；
-    其中 priority≤3 且 active 的条目参与进料口定向匹配。
-    统计栏「活跃需求」显示 54（总监控路数），demandHint 显示活跃子集数量。
-
-  说明：统计面板 / 走 SchedulerEngine 快照，不含 FIFO 需求广播逻辑。
-
------------------------------------------------------------------------------
-4. FIFO 页「装箱工位状态」全显示空闲
------------------------------------------------------------------------------
-  【原问题】moduleState 只渲染 A/B/C 三个模块：
-    - 无 plan 时一律 pill「空闲」
-    - 同一模块 6 个规格共用一个工位动画，面板无法反映 18 箱各自状态
-
-  【修复】moduleState 按 18 规格逐行展示（复用现有 result-line / pill 样式）：
-    - 填箱中 / 封箱中 — 该规格正在装盒 plan
-    - 进箱中       — 有鱼在途移向该规格工位
-    - 待装箱       — 料道有余鱼等待开单
-    - 空闲         — 无在途、无待装
+  与统计面板共用 /api/start|pause|resume|stop；入料进度读 input_count。
+  运行日志高度见 fifo_monitor.html 的 .log 样式。
 
 -----------------------------------------------------------------------------
 API 一览
