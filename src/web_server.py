@@ -37,7 +37,7 @@
   前端轮询/控制：
     GET  /api/state     每 200ms 读快照（入料、装盒、模块库存…）
     POST /api/start     开始  {seed, total, move_timeout, speed}
-    POST /api/pause|resume|stop
+    POST /api/pause|resume|stop|speed
 
   统计面板与 FIFO 动画共用上述 API：
     · 入料进度：input_count / total_fish（两页数字一致）
@@ -146,6 +146,7 @@
   POST /api/pause           暂停
   POST /api/resume          继续
   POST /api/stop            停止
+  POST /api/speed           运行中调整倍速 {speed}
 
 八、相关源码
 -----------------------------------------------------------------------------
@@ -208,8 +209,7 @@ class SimulationRunner:
         self.paused = False
         self.stop_flag = False
         self.thread: threading.Thread | None = None
-        self.interval = 0.05
-        self.speed = 10.0
+        self.speed = 10.0  # 条/秒（与 fifo_monitor 速度输入一致）
         self.error: str | None = None
 
     def get_state(self) -> dict:
@@ -274,7 +274,7 @@ class SimulationRunner:
                         if self.engine:
                             self.engine.finish_batch()
                     break
-                time.sleep(self.interval / self.speed)
+                time.sleep(1.0 / self.speed)
         except Exception as exc:
             with self.lock:
                 self.error = str(exc)
@@ -289,6 +289,10 @@ class SimulationRunner:
     def resume(self) -> None:
         with self.lock:
             self.paused = False
+
+    def set_speed(self, speed: float) -> None:
+        with self.lock:
+            self.speed = max(0.1, float(speed))
 
     def stop(self) -> None:
         with self.lock:
@@ -543,6 +547,13 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/stop":
             RUNNER.stop()
             return self._json({"ok": True, "state": RUNNER.get_state()})
+
+        if path == "/api/speed":
+            try:
+                RUNNER.set_speed(float(body.get("speed", 10)))
+                return self._json({"ok": True, "state": RUNNER.get_state()})
+            except (TypeError, ValueError) as exc:
+                return self._json({"ok": False, "error": str(exc)}, 400)
 
         self._json({"error": "Not Found", "path": path}, 404)
 

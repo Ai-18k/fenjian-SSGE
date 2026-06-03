@@ -4,12 +4,10 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="236c8e9a-740a-4589-b391-a79aed86e843" name="Changes" comment="@src/web_server.py 写一份说明文档，工作流程&#10;1、记录成盒鱼的数据情况，在 @src/index.html 页面增加一个查看成盒数据功能或者导出到csv&#10;2、25000跑完以后剩余未成盒的鱼的数据记录，支持在线查看或者导出csv&#10;3、  @src/fifo_monitor.html 的运行运行日志的框可以拉长点方便查看，现在的输出框太小">
+    <list default="true" id="236c8e9a-740a-4589-b391-a79aed86e843" name="Changes" comment="微调轨道">
+      <change beforePath="$PROJECT_DIR$/.idea/misc.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/misc.xml" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/data/cartons_seed_42.csv" beforeDir="false" afterPath="$PROJECT_DIR$/data/cartons_seed_42.csv" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/data/remaining_seed_42.csv" beforeDir="false" afterPath="$PROJECT_DIR$/data/remaining_seed_42.csv" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/data/run_cartons_seed_42.csv" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/data/run_report_seed_42.csv" beforeDir="false" afterPath="$PROJECT_DIR$/data/run_report_seed_42.csv" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/fifo_monitor.html" beforeDir="false" afterPath="$PROJECT_DIR$/src/fifo_monitor.html" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/src/web_server.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/web_server.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
@@ -51,24 +49,32 @@
   </component>
   <component name="PropertiesComponent"><![CDATA[{
   "keyToString": {
+    "ASKED_ADD_EXTERNAL_FILES": "true",
     "DefaultHtmlFileTemplate": "HTML File",
-    "Python.Scheduler_Engine.executor": "Run",
+    "Python.Scheduler_Engine.executor": "Debug",
+    "Python.improved_fish_boxing_501.executor": "Run",
     "Python.web_server.executor": "Run",
     "Python.细分规则.executor": "Run",
     "Python.计算需求.executor": "Run",
     "Python.随机种子生成.executor": "Run",
     "RunOnceActivity.ShowReadmeOnStart": "true",
     "git-widget-placeholder": "main",
-    "last_opened_file_path": "E:/project/pythonproject/spider/gov/hd",
+    "last_opened_file_path": "E:/project/pythonproject/kaomam_project",
     "node.js.detected.package.eslint": "true",
     "node.js.detected.package.tslint": "true",
     "node.js.selected.package.eslint": "(autodetect)",
     "node.js.selected.package.tslint": "(autodetect)",
     "nodejs_package_manager_path": "npm",
     "settings.editor.selected.configurable": "project.propVCSSupport.DirectoryMappings",
+    "ts.external.directory.path": "E:\\IDA\\PyCharm 2024.1.4\\plugins\\javascript-plugin\\jsLanguageServicesImpl\\external",
     "vue.rearranger.settings.migration": "true"
   }
 }]]></component>
+  <component name="RecentsManager">
+    <key name="CopyFile.RECENT_KEYS">
+      <recent name="E:\project\pythonproject\kaomam_project\guoxuan样例" />
+    </key>
+  </component>
   <component name="RunManager" selected="Python.web_server">
     <configuration name="细分规则" type="PythonConfigurationType" factoryName="Python" temporary="true" nameIsGenerated="true">
       <module name="kaomam_project" />
@@ -212,7 +218,8 @@
       <workItem from="1780278889792" duration="17212000" />
       <workItem from="1780361041264" duration="20307000" />
       <workItem from="1780391329154" duration="4888000" />
-      <workItem from="1780448083047" duration="8860000" />
+      <workItem from="1780448083047" duration="16884000" />
+      <workItem from="1780534098703" duration="4398000" />
     </task>
     <task id="LOCAL-00001" summary="初始状态">
       <option name="closed" value="true" />
@@ -262,7 +269,63 @@
       <option name="project" value="LOCAL" />
       <updated>1780449259827</updated>
     </task>
-    <option name="localTasksCounter" value="7" />
+    <task id="LOCAL-00007" summary="前端做一下调整进料，添加轨道,增加了java的算法">
+      <option name="closed" value="true" />
+      <created>1780477364042</created>
+      <option name="number" value="00007" />
+      <option name="presentableId" value="LOCAL-00007" />
+      <option name="project" value="LOCAL" />
+      <updated>1780477364042</updated>
+    </task>
+    <task id="LOCAL-00008" summary="前端做一下调整进料，添加轨道,增加了java的算法">
+      <option name="closed" value="true" />
+      <created>1780477408740</created>
+      <option name="number" value="00008" />
+      <option name="presentableId" value="LOCAL-00008" />
+      <option name="project" value="LOCAL" />
+      <updated>1780477408740</updated>
+    </task>
+    <task id="LOCAL-00009" summary="前端做一下调整进料，添加轨道,增加了java的算法">
+      <option name="closed" value="true" />
+      <created>1780477451730</created>
+      <option name="number" value="00009" />
+      <option name="presentableId" value="LOCAL-00009" />
+      <option name="project" value="LOCAL" />
+      <updated>1780477451730</updated>
+    </task>
+    <task id="LOCAL-00010" summary="前端做一下调整进料，添加轨道,增加了java的算法">
+      <option name="closed" value="true" />
+      <created>1780477496410</created>
+      <option name="number" value="00010" />
+      <option name="presentableId" value="LOCAL-00010" />
+      <option name="project" value="LOCAL" />
+      <updated>1780477496410</updated>
+    </task>
+    <task id="LOCAL-00011" summary="前端做一下调整进料，添加轨道,增加了java的算法">
+      <option name="closed" value="true" />
+      <created>1780477509802</created>
+      <option name="number" value="00011" />
+      <option name="presentableId" value="LOCAL-00011" />
+      <option name="project" value="LOCAL" />
+      <updated>1780477509802</updated>
+    </task>
+    <task id="LOCAL-00012" summary="前端做一下调整进料，微调轨道">
+      <option name="closed" value="true" />
+      <created>1780478110542</created>
+      <option name="number" value="00012" />
+      <option name="presentableId" value="LOCAL-00012" />
+      <option name="project" value="LOCAL" />
+      <updated>1780478110542</updated>
+    </task>
+    <task id="LOCAL-00013" summary="微调轨道">
+      <option name="closed" value="true" />
+      <created>1780478335254</created>
+      <option name="number" value="00013" />
+      <option name="presentableId" value="LOCAL-00013" />
+      <option name="project" value="LOCAL" />
+      <updated>1780478335254</updated>
+    </task>
+    <option name="localTasksCounter" value="14" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
@@ -286,11 +349,16 @@
     <MESSAGE value="前端细节打磨：1、鱼的图标要去掉圆框，和原来图标保持一致&#10;2、主要的动画框去掉下拉框，展示全部动画&#10;3、“装箱工位状态”模块做的更可视化一点，用框表示，用不同颜色填充作为箱子的状态" />
     <MESSAGE value="确保index.html fifo_monitor.html 目前这两个文件切换时还是会出现bug&#10;点击  http://127.0.0.1:8765/ 的“FIFO 动画监控”跳转http://127.0.0.1:8765/monitor 状态会乱，还有http://127.0.0.1:8765/monitor &#10;进料会有bug，多条鱼进料很乱，我需要保持和以前一样进料方式，一条一条进，其他的样式不要修改" />
     <MESSAGE value="@src/web_server.py 写一份说明文档，工作流程&#10;1、记录成盒鱼的数据情况，在 @src/index.html 页面增加一个查看成盒数据功能或者导出到csv&#10;2、25000跑完以后剩余未成盒的鱼的数据记录，支持在线查看或者导出csv&#10;3、  @src/fifo_monitor.html 的运行运行日志的框可以拉长点方便查看，现在的输出框太小" />
-    <option name="LAST_COMMIT_MESSAGE" value="@src/web_server.py 写一份说明文档，工作流程&#10;1、记录成盒鱼的数据情况，在 @src/index.html 页面增加一个查看成盒数据功能或者导出到csv&#10;2、25000跑完以后剩余未成盒的鱼的数据记录，支持在线查看或者导出csv&#10;3、  @src/fifo_monitor.html 的运行运行日志的框可以拉长点方便查看，现在的输出框太小" />
+    <MESSAGE value="前端做一下调整进料，添加轨道,增加了java的算法" />
+    <MESSAGE value="前端做一下调整进料，微调轨道" />
+    <MESSAGE value="Merge remote-tracking branch 'origin/main'&#10;&#10;# Conflicts:&#10;#&#9;.idea/workspace.xml&#10;#&#9;src/fifo_monitor.html&#10;#&#9;src/web_server.py" />
+    <MESSAGE value="微调轨道" />
+    <option name="LAST_COMMIT_MESSAGE" value="微调轨道" />
   </component>
   <component name="com.intellij.coverage.CoverageDataManagerImpl">
-    <SUITE FILE_PATH="coverage/kaomam_project$web_server.coverage" NAME="web_server Coverage Results" MODIFIED="1780459128806" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$/src" />
+    <SUITE FILE_PATH="coverage/kaomam_project$improved_fish_boxing_501.coverage" NAME="improved_fish_boxing_501 Coverage Results" MODIFIED="1780470676815" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$/guoxuan样例" />
+    <SUITE FILE_PATH="coverage/kaomam_project$web_server.coverage" NAME="web_server Coverage Results" MODIFIED="1780539129889" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$/src" />
     <SUITE FILE_PATH="coverage/kaomam_project$.coverage" NAME="细分规则 Coverage Results" MODIFIED="1780370124179" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$/plan" />
-    <SUITE FILE_PATH="coverage/kaomam_project$Scheduler_Engine.coverage" NAME="Scheduler_Engine Coverage Results" MODIFIED="1780370661798" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$/src" />
+    <SUITE FILE_PATH="coverage/kaomam_project$Scheduler_Engine.coverage" NAME="Scheduler_Engine Coverage Results" MODIFIED="1780482422574" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$/src" />
   </component>
 </project>

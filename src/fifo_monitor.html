@@ -123,7 +123,7 @@ const ALL_SPECS=Object.values(MODULE_SPECS).flat();
 const MODULE_COLOR={A:'#16a34a',B:'#2563eb',C:'#7c3aed'};
 const BUCKET_COLOR={light:'#7dd3fc',mid:'#86efac',heavy:'#fbbf24'};
 const BUCKETS=['light','mid','heavy'];
-const FEED_TRACK={x:492,w:58,top:95,bottom:1535};
+const FEED_TRACK={x:492,w:58,top:95,bottom:1536};
 let canvas,ctx,running=false,lastTs=0,beltPhase=0,spawnTimer=0,simTime=0,cartonSeq=0;
 let movingFish=[],lanes={},laneList=[],modules={},finished=false;
 let batchFish=[],batchIndex=0,batchLoaded=false;
@@ -162,11 +162,16 @@ function spawnBatchRow(row){
 
 function syncIntakePosition(target,allowSkip){
   serverInputCount=target;
-  stats.input=target;
+  if(!running||finished)stats.input=target;
   if(allowSkip&&!intakeSynced&&target>batchIndex){
     batchIndex=target;
+    stats.input=target;
     intakeSynced=true;
   }
+}
+function getShownInput(){
+  if(!finished&&batchIndex<serverInputCount)return batchIndex;
+  return Math.max(serverInputCount,batchIndex);
 }
 
 async function applyServerState(state,allowSkip){
@@ -181,8 +186,10 @@ async function applyServerState(state,allowSkip){
   const seed=state.seed!=null?state.seed:Number($('seedInput').value||42);
   const total=state.total_fish||getTotalFish();
   await ensureBatchForSession(seed,total);
-  if(state.running&&!state.paused&&!state.finished)running=true;
-  else running=false;
+  if(state.running&&!state.paused&&!state.finished){
+    running=true;
+    scheduleSpeedSync();
+  }else running=false;
   finished=!!state.finished;
   if(state.paused)running=false;
   syncIntakePosition(state.input_count||0,!!allowSkip);
@@ -213,6 +220,17 @@ function startSyncPoll(){
 function $(id){return document.getElementById(id)}
 function getTotalFish(){return Math.max(1,Number($('totalFish').value||25000))}
 function getSpeed(){return Math.max(1,Math.min(500,Number($('speedInput').value||8)))}
+let speedSyncTimer=null;
+function scheduleSpeedSync(){
+  clearTimeout(speedSyncTimer);
+  speedSyncTimer=setTimeout(syncSpeedToServer,120);
+}
+async function syncSpeedToServer(){
+  try{
+    const cur=await apiJson('/api/state');
+    if(cur.running)await apiJson('/api/speed',{speed:getSpeed()});
+  }catch(e){console.error(e)}
+}
 function getCapFactor(){return Math.max(1,Number($('capacityFactor').value||8))}
 function getHeadTimeout(){return Math.max(0,Number($('headTimeout').value||0))}
 function specName(s){return String(s).toUpperCase()}
@@ -542,6 +560,7 @@ function update(dt){
     if(spawnTimer>=interval&&batchIndex<serverInputCount&&batchIndex<batchFish.length){
       spawnTimer-=interval;
       spawnBatchRow(batchFish[batchIndex++]);
+      stats.input=batchIndex;
     }
     if(batchIndex>=getTotalFish()&&batchIndex>=serverInputCount&&!movingFish.length&&finished)finishBatch();
   }
@@ -566,7 +585,7 @@ function moveAlongPath(f,dtScaled){
 function updateUI(){
   let queued=0;for(const l of laneList)queued+=l.queue.length;
   const total=getTotalFish();
-  const shownInput=Math.max(serverInputCount,stats.input);
+  const shownInput=getShownInput();
   $('sInput').textContent=shownInput;
   $('progressBar').style.width=Math.min(100,shownInput/total*100)+'%';
   $('sCartons').textContent=stats.cartons;
@@ -737,6 +756,8 @@ function roundRect(x,y,w,h,r,fill,stroke,lw){ctx.beginPath();ctx.moveTo(x+r,y);c
 
 window.addEventListener('load',async function(){
   canvas=$('scene');ctx=canvas.getContext('2d');
+  $('speedInput').addEventListener('input',scheduleSpeedSync);
+  $('speedInput').addEventListener('change',scheduleSpeedSync);
   $('startBtn').onclick=async()=>{
     if(!batchLoaded)await loadBatch();
     const cur=await apiJson('/api/state');
