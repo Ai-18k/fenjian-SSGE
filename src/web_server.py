@@ -9,107 +9,150 @@
 工作流程说明
 =============================================================================
 
-【启动】
-  python src/web_server.py
-  或双击 src/start_web.bat
-  默认端口 8765（环境变量 WEB_PORT 可改）
-
-  页面：
-    /         统计面板 — 后台 SchedulerEngine 逐步仿真，轮询 /api/state
-    /monitor  FIFO 动画 — 浏览器内独立仿真，批次来自 /api/batch
-
+一、快速开始
 -----------------------------------------------------------------------------
-1. 如何记录成盒鱼的数据
+  启动：
+    python src/web_server.py
+    或双击 src/start_web.bat
+  默认地址：http://127.0.0.1:8765  （环境变量 WEB_PORT 可改端口）
+
+  两个页面（共用同一后端 SimulationRunner）：
+    /         统计面板 index.html   — 趋势、模块库存、成盒/尾料查看
+    /monitor  FIFO 动画 fifo_monitor.html — 逐条进料动画、需求广播、工位色块
+
+  典型操作顺序：
+    1. 打开 / ，设置种子/条数/倍速，点「开始模拟」
+    2. 需要动画时打开 /monitor（或点页头链接），状态与入料进度自动同步
+    3. 跑完后在 / 点「成盒数据」「尾料数据」查看，或导出 CSV
+    4. 「下载报告」获取全批次 fish 追踪明细
+
+二、系统架构
 -----------------------------------------------------------------------------
-  数据在封箱瞬间产生，有三层可读写：
+  web_server.py
+    └─ SimulationRunner（后台线程）
+         └─ SchedulerEngine（Scheduler_Engine.py）
+              · process_one()  每条鱼入料 → 料道 → 封箱 → 回流
+              · finish_batch() 批末扫尾、写 CSV、标记尾料
 
-  (A) 内存（运行中）
-      SchedulerEngine._try_pack_all() 每封一箱：
-        - self.cartons 追加 BoxPlan（spec/count/weight/parts/fish）
-        - self.stats.cartons / packed_fish 累加
-        - events 追加 kind=pack 事件
-      Web 轮询 /api/state 可读：
-        - carton_records  全部成盒列表（含 fish_ids）
-        - recent_cartons  最近 8 盒摘要
+  前端轮询/控制：
+    GET  /api/state     每 200ms 读快照（入料、装盒、模块库存…）
+    POST /api/start     开始  {seed, total, move_timeout, speed}
+    POST /api/pause|resume|stop
 
-  (B) 批末 CSV（finish_batch 自动写）
-      data/cartons_seed_{seed}.csv
-      字段：carton_seq, spec, count, weight, small, medium, large, fish_ids
+  统计面板与 FIFO 动画共用上述 API：
+    · 入料进度：input_count / total_fish（两页数字一致）
+    · 启停状态：running / paused / finished（两页同步）
+    · FIFO 动画按 input_count 逐条 spawn，不批量补鱼
 
-  (C) HTTP 接口
-      GET /api/cartons?seed=42       JSON 全部成盒
-      GET /api/cartons.csv?seed=42   下载 CSV
-
-  【若要新增字段】例如封箱时间、操作员：
-    1. 在 Scheduler_Engine.BoxPlan 或 _try_pack_all() 封箱处写入新字段
-    2. 同步 _save_cartons_csv() 的 fieldnames 与 writerow
-    3. 同步 get_snapshot() 里 carton_records 的字典结构
-    4. （可选）同步 web_server._cartons_from_disk() 的 JSON 映射
-
+三、成盒鱼数据 — 如何记录与查看
 -----------------------------------------------------------------------------
-2. 25000 条跑完后剩余未处理鱼
+  【何时产生】
+    引擎 _try_pack_all() 每成功封一箱（4980~5030g）：
+      · engine.cartons 追加 BoxPlan（spec/count/weight/parts/fish）
+      · stats.cartons、stats.packed_fish 累加
+      · events 追加 kind=pack
+
+  【批末持久化】finish_batch() 自动写：
+    data/cartons_seed_{seed}.csv
+    字段：carton_seq, spec, count, weight, small, medium, large, fish_ids
+
+  【在线 / 导出】
+    GET /api/cartons?seed=42         JSON，字段 records[]
+    GET /api/cartons.csv?seed=42     下载 CSV
+    GET /api/state                   运行中可读 carton_records、recent_cartons
+
+  【统计面板操作】
+    按钮「成盒数据」→ 弹窗在线查看（按当前种子）
+    弹窗「导出 CSV」→ cartons_seed_{seed}.csv
+    （模拟进行中可读内存；历史批次可读 data/ 下 CSV）
+
+  【若要扩展字段】例如操作员、封箱时间：
+    1. Scheduler_Engine._try_pack_all() 封箱处写入
+    2. _save_cartons_csv() 增列
+    3. get_snapshot() 的 carton_records 增字段
+    4. web_server._cartons_from_disk() 同步 JSON 映射
+
+四、25000 跑完后 — 未成盒尾料
 -----------------------------------------------------------------------------
-  入料 25000 条结束后，SimulationRunner 调用 finish_batch()：
-    - 继续扫尾封箱（处理 reflow 队列）
-    - 料道/回流/规格外仍未装箱的鱼 → tracker.unmatched（尾料）
-    - 自动导出三份文件到 data/：
+  【何时产生】
+    入料 total 条（默认 25000）结束后，SimulationRunner 调用 finish_batch()：
+      · 继续扫尾封箱（处理 reflow 队列）
+      · 料道/回流/规格外仍未装箱 → tracker.unmatched
 
-      run_report_seed_{seed}.csv    每条鱼全生命周期（fish_id/weight/spec/status…）
-      remaining_seed_{seed}.csv     仅未装箱尾料（fish_id/weight/spec/status…）
-      cartons_seed_{seed}.csv       成盒明细（见上一节）
+  【自动导出】
+    data/remaining_seed_{seed}.csv   未成盒尾料明细
+    data/run_report_seed_{seed}.csv    全批次每条鱼生命周期
+    data/cartons_seed_{seed}.csv       成盒明细（见第三节）
 
-  HTTP 读取：
-    GET /api/remaining?seed=42      JSON 尾料列表
-    GET /api/remaining.csv?seed=42  下载尾料 CSV
-    GET /api/state                  finished=true 时含 remaining_fish / remaining_count
+  【在线 / 导出】
+    GET /api/remaining?seed=42        JSON，字段 fish[]
+    GET /api/remaining.csv?seed=42    下载尾料 CSV
+    GET /api/report?seed=42           下载全量追踪 CSV
+    GET /api/state                    finished=true 时含 remaining_fish、remaining_count
 
-  典型 status：unmatched_tail（料道剩余）、unmatched_reflow（回流未再装）、
-               unmatched_outside（规格外）
+  【统计面板操作】
+    按钮「尾料数据」→ 弹窗在线查看
+    弹窗「导出 CSV」→ remaining_seed_{seed}.csv
 
+  【status 含义】
+    unmatched_tail     批末料道剩余
+    unmatched_reflow   回流后仍未再装
+    unmatched_outside  规格外
+
+五、FIFO 动画页（/monitor）要点
 -----------------------------------------------------------------------------
-3. FIFO 页「活跃需求」为何只有几个而不是 54 个
+  5.1 活跃需求为何应是 54 路（18 规格 × 小/中/大）
+    地址格式：模块/规格/区段，如 A/15p/light
+    collectDemands() 应遍历全部 54 路参与监控与广播；
+    仅缺鱼或装箱 releaseRemaining>0 才入列会导致统计只有个位数（已修复）。
+
+  5.2 装箱工位状态
+    按 18 个规格展示色块：空闲 / 待装箱 / 进箱中 / 填箱中 / 封箱中
+    （统计面板不含装箱动画工位，仅 FIFO 页展示）
+
+  5.3 运行日志
+    fifo_monitor.html 中 .log 控制日志区域高度（当前 360px）。
+
+  5.4 与统计面板同步
+    · 打开 /monitor 时读取 /api/state，batchIndex 对齐 input_count，不补历史动画
+    · 运行中按 spawnTimer 逐条进料（batchIndex < serverInputCount 时每次一条）
+    · 开始/暂停/继续/停止 均调用同一套 POST API
+
+六、默认参数与数据文件
 -----------------------------------------------------------------------------
-  地址规则：模块/规格/区段，例如 A/15p/light
-  18 规格 × 小/中/大 = 54 路，每路都应参与缺鱼诊断与广播。
+  默认种子 seed=42，总条数 total=25000，移动超时 move_timeout=30s
+  批次源：data/fish_seed_{seed}.csv（不存在则自动生成）
 
-  【原问题】fifo_monitor.html 的 collectDemands() 逻辑缺陷：
-    - 模块 busy 时：仅 releaseRemaining>0 的 3 路才入列
-    - 模块 idle 时：仅 bestDiagnosticForSpec 返回 needBucket 的 1 路才入列
-    - 可装盒、料道正常、无需补鱼的地址被跳过 → 统计只有个位数
+  输出目录 data/（批末生成）：
+    fish_seed_{seed}.csv
+    cartons_seed_{seed}.csv
+    remaining_seed_{seed}.csv
+    run_report_seed_{seed}.csv
 
-  【修复】collectDemands() 改为遍历全部 54 路，每路输出监控条目；
-    其中 priority≤3 且 active 的条目参与进料口定向匹配。
-    统计栏「活跃需求」显示 54（总监控路数），demandHint 显示活跃子集数量。
-
-  说明：统计面板 / 走 SchedulerEngine 快照，不含 FIFO 需求广播逻辑。
-
+七、API 一览
 -----------------------------------------------------------------------------
-4. FIFO 页「装箱工位状态」全显示空闲
------------------------------------------------------------------------------
-  【原问题】moduleState 只渲染 A/B/C 三个模块：
-    - 无 plan 时一律 pill「空闲」
-    - 同一模块 6 个规格共用一个工位动画，面板无法反映 18 箱各自状态
-
-  【修复】moduleState 按 18 规格逐行展示（复用现有 result-line / pill 样式）：
-    - 填箱中 / 封箱中 — 该规格正在装盒 plan
-    - 进箱中       — 有鱼在途移向该规格工位
-    - 待装箱       — 料道有余鱼等待开单
-    - 空闲         — 无在途、无待装
-
------------------------------------------------------------------------------
-API 一览
------------------------------------------------------------------------------
-  GET  /api/state           模拟快照
-  GET  /api/batch           种子批次鱼列表
-  GET  /api/config          默认参数与模块规格表
+  GET  /                    统计面板
+  GET  /monitor             FIFO 动画
+  GET  /api/state           模拟快照（核心）
+  GET  /api/config          默认参数、模块规格表
+  GET  /api/batch           种子批次 fish 列表（FIFO 动画用）
   GET  /api/cartons         成盒 JSON
-  GET  /api/cartons.csv     成盒 CSV 下载
+  GET  /api/cartons.csv     成盒 CSV
   GET  /api/remaining       尾料 JSON
-  GET  /api/remaining.csv   尾料 CSV 下载
-  GET  /api/report          全量追踪 CSV 下载
-  GET  /api/version         版本与路由
-  POST /api/start           开始模拟 {seed,total,move_timeout,speed}
-  POST /api/pause|resume|stop
+  GET  /api/remaining.csv   尾料 CSV
+  GET  /api/report          全量追踪 CSV
+  GET  /api/version         版本与路由列表
+  POST /api/start           开始模拟
+  POST /api/pause           暂停
+  POST /api/resume          继续
+  POST /api/stop            停止
+
+八、相关源码
+-----------------------------------------------------------------------------
+  Scheduler_Engine.py   分拣引擎、封箱、尾料、CSV 导出
+  index.html            统计面板 UI
+  fifo_monitor.html     FIFO 动画 UI
+  data/                 批次与报告 CSV
 """
 
 from __future__ import annotations

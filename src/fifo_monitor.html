@@ -26,7 +26,7 @@
     .scene-wrap{overflow:visible}
     .scene-wrap canvas{display:block;width:100%;max-width:1740px;height:auto;background:#f8fafc;border:1px solid #dbe5f3;border-radius:10px}
     canvas{display:block;background:#f8fafc;border:1px solid #dbe5f3;border-radius:10px}
-    .log{height:160px;overflow:auto;background:#f8fafc;border:1px solid var(--line);border-radius:10px;padding:8px;font:12px/1.5 Consolas,monospace}
+    .log{height:540px;overflow:auto;background:#f8fafc;border:1px solid var(--line);border-radius:10px;padding:8px;font:12px/1.5 Consolas,monospace}
     .demand-card{border:1px solid #bfdbfe;border-radius:10px;padding:8px 10px;margin-bottom:8px;background:#eff6ff;font-size:12px}
     .demand-card.active{border-color:var(--green);background:#ecfdf5}
     .demand-scroll{max-height:320px;overflow-y:auto}
@@ -123,6 +123,7 @@ const ALL_SPECS=Object.values(MODULE_SPECS).flat();
 const MODULE_COLOR={A:'#16a34a',B:'#2563eb',C:'#7c3aed'};
 const BUCKET_COLOR={light:'#7dd3fc',mid:'#86efac',heavy:'#fbbf24'};
 const BUCKETS=['light','mid','heavy'];
+const FEED_TRACK={x:492,w:58,top:118,bottom:1458};
 let canvas,ctx,running=false,lastTs=0,beltPhase=0,spawnTimer=0,simTime=0,cartonSeq=0;
 let movingFish=[],lanes={},laneList=[],modules={},finished=false;
 let batchFish=[],batchIndex=0,batchLoaded=false;
@@ -220,6 +221,22 @@ function moduleOfSpec(spec){for(const k of Object.keys(MODULE_SPECS))if(MODULE_S
 function bucketOf(spec,w){const [lo,hi]=SPECS[spec].range,span=hi-lo+1;if(w<lo+span/3)return 'light';if(w<lo+span*2/3)return 'mid';return 'heavy'}
 function laneAddress(mod,spec,bucket){return mod+'/'+spec+'/'+bucket}
 function capacityForSpec(spec){return Math.ceil(Math.max(...SPECS[spec].counts)*getCapFactor()/3)}
+function feedTrackEntryPath(){
+  const tx=FEED_TRACK.x;
+  return [{x:250,y:70},{x:335,y:70,pause:.15},{x:420,y:70},{x:tx,y:70},{x:tx,y:FEED_TRACK.top,pause:.08}];
+}
+function feedTrackToLane(lane){
+  const tx=FEED_TRACK.x,rowY=lane.y;
+  return feedTrackEntryPath().concat([{x:tx,y:rowY,pause:.05},{x:660,y:rowY},{x:675,y:rowY}]);
+}
+function feedTrackToBox(mod){
+  const tx=FEED_TRACK.x,mergeY=mod.mergeY;
+  return feedTrackEntryPath().concat([{x:tx,y:mergeY,pause:.05},{x:mod.mergeX,y:mergeY},{x:mod.box.x-30,y:mergeY}]);
+}
+function feedTrackToTail(){
+  const tx=FEED_TRACK.x;
+  return feedTrackEntryPath().concat([{x:tx,y:FEED_TRACK.bottom,pause:.05},{x:610,y:FEED_TRACK.bottom},{x:610,y:1450},{x:1580,y:1450}]);
+}
 function log(msg){const box=$('log');const d=document.createElement('div');d.textContent='['+new Date().toLocaleTimeString()+'] '+msg;box.appendChild(d);while(box.childNodes.length>150)box.removeChild(box.firstChild);box.scrollTop=box.scrollHeight}
 
 async function loadBatch(){
@@ -415,7 +432,7 @@ function routeToAddress(item,demand){
   f.direct=true;stats.directRoute++;
   f.x=55;f.y=70;
   if(demand.target==='box'&&mod.busy&&mod.plan){
-    f.path=[{x:250,y:70},{x:380,y:70,pause:.12},{x:520,y:70},{x:mod.mergeX,y:70},{x:mod.mergeX,y:mod.mergeY},{x:mod.box.x-30,y:mod.mergeY}];
+    f.path=feedTrackToBox(mod);
     f.onDone=function(){
       if(!mod.plan)return;
       mod.plan.arrived++;mod.box.count++;mod.box.weight+=f.weight;
@@ -423,7 +440,7 @@ function routeToAddress(item,demand){
     };
     log('定向推送 #'+item.id+' '+item.weight+'g → '+demand.address+' (直送装箱)');
   }else{
-    f.path=[{x:250,y:70},{x:380,y:70,pause:.12},{x:520,y:mod.y+26},{x:660,y:mod.y+26},{x:675,y:lane.y}];
+    f.path=feedTrackToLane(lane);
     f.onDone=function(){
       if(!enqueueToLane(lane,f))log('#'+item.id+' 料道已满，推送失败');
       else log('定向推送 #'+item.id+' → '+demand.address+' (入料道)');
@@ -437,7 +454,7 @@ function spawnNormal(item){
   const bucket=bucketOf(item.spec,item.weight);
   const f=createFish(item.spec,item.weight,bucket,item.id);
   f.x=55;f.y=70;
-  f.path=[{x:250,y:70},{x:335,y:70,pause:.2},{x:450,y:70},{x:500,y:mod.y+26},{x:660,y:mod.y+26},{x:675,y:lane.y}];
+  f.path=feedTrackToLane(lane);
   f.onDone=function(){
     if(lane.queue.length>=capacityForSpec(item.spec)){stats.fifoReflow++;stats.overflow++;return}
     f.state='queued';f.enterTime=simTime;lane.queue.push(f);normalizeLane(lane);
@@ -448,7 +465,7 @@ function spawnNormal(item){
 function spawnOutside(item){
   const f=createFish(null,item.weight,'light',item.id);
   f.color='#fb923c';f.x=55;f.y=70;
-  f.path=[{x:250,y:70},{x:610,y:70},{x:610,y:1450},{x:1580,y:1450}];
+  f.path=feedTrackToTail();
   f.onDone=function(){stats.outsideTail++};
   movingFish.push(f);
 }
@@ -627,8 +644,24 @@ async function fastRun(){
 
 /* ---- 绘制（精简自样例） ---- */
 function draw(){if(!ctx)return;ctx.clearRect(0,0,canvas.width,canvas.height);drawBg();
-  drawUpstream();for(const m of Object.values(modules))drawModule(m);drawTail();drawFish();drawFooter()}
+  drawFeedTrack();drawUpstream();for(const m of Object.values(modules))drawModule(m);drawTail();drawFish();drawFooter()}
 function drawBg(){ctx.fillStyle='#f8fafc';ctx.fillRect(0,0,canvas.width,canvas.height)}
+function drawFeedTrack(){
+  const {x,w,top,bottom}=FEED_TRACK,left=x-w/2,h=bottom-top;
+  roundRect(left,top,w,h,10,'#e0f2fe','#38bdf8',1.8);
+  roundRect(left+6,top+6,w-12,h-12,8,'#f0f9ff','#bae6fd',1);
+  ctx.strokeStyle='#7dd3fc';ctx.lineWidth=3;ctx.setLineDash([6,5]);
+  ctx.beginPath();ctx.moveTo(x,top+8);ctx.lineTo(x,bottom-8);ctx.stroke();ctx.setLineDash([]);
+  ctx.fillStyle='#0369a1';ctx.font='bold 11px Arial';
+  ctx.save();ctx.translate(left-10,top+h/2);ctx.rotate(-Math.PI/2);ctx.fillText('进料轨道',0,0);ctx.restore();
+  for(const spec of ALL_SPECS){
+    const lane=lanes[spec+'_mid'];if(!lane)continue;
+    ctx.strokeStyle='rgba(147,197,253,.45)';ctx.lineWidth=2;
+    ctx.beginPath();ctx.moveTo(x+w/2-2,lane.y);ctx.lineTo(660,lane.y);ctx.stroke();
+  }
+  drawPipe([{x:470,y:128},{x:470,y:top+4},{x:x,y:top+4}],'#60a5fa',7);
+  ctx.fillStyle='#0369a1';ctx.font='10px Arial';ctx.fillText('↓ 下行分轨',x-22,top-6);
+}
 function drawUpstream(){
   drawConv(40,70,210,42,true,'#dbeafe','#93c5fd','进料口');
   drawConv(285,70,90,42,true,'#dbeafe','#93c5fd','称重');
@@ -637,7 +670,7 @@ function drawUpstream(){
   if(currentInletDemand||getInletDemand()){
     const d=getInletDemand();if(d){ctx.fillStyle='#92400e';ctx.font='11px Arial';ctx.fillText('→ '+d.address,415,98)}
   }
-  for(const m of Object.values(modules))drawPipe([{x:536,y:91},{x:545,y:91},{x:545,y:m.y+26},{x:660,y:m.y+26}],'#bfdbfe',10);
+  drawPipe([{x:535,y:91},{x:470,y:91},{x:470,y:128}],'#93c5fd',8);
 }
 function drawModule(m){
   roundRect(m.x,m.y,1070,400,18,'#fff','#cbd5e1',1.5);

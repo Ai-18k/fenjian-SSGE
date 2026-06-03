@@ -250,6 +250,8 @@
       <a id="btnReport" href="/api/report?seed=42" style="text-decoration:none">
         <button type="button" class="secondary" disabled id="btnReportInner">下载报告</button>
       </a>
+      <button type="button" class="secondary" id="btnViewCartons">成盒数据</button>
+      <button type="button" class="secondary" id="btnViewRemaining">尾料数据</button>
     </div>
 
     <div class="stats">
@@ -293,6 +295,16 @@
       </div>
     </div>
   </main>
+
+  <dialog id="dataDialog" class="panel" style="max-width:760px;width:92%;border:none;padding:16px">
+    <h2 id="dataDialogTitle" style="margin-bottom:8px"></h2>
+    <p id="dataDialogMeta" style="font-size:12px;color:var(--muted);margin-bottom:10px"></p>
+    <div id="dataDialogBody" class="log" style="max-height:55vh"></div>
+    <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">
+      <a id="dataDialogExport" href="#" style="text-decoration:none"><button type="button" class="secondary">导出 CSV</button></a>
+      <button type="button" class="secondary" id="dataDialogClose">关闭</button>
+    </div>
+  </dialog>
 
   <script>
     const $ = id => document.getElementById(id);
@@ -427,6 +439,55 @@
       }).join("");
     }
 
+    function currentSeed() {
+      return +$("seed").value || 42;
+    }
+
+    function renderCartonRecords(records) {
+      if (!records.length) {
+        return '<div style="color:var(--muted);font-size:12px">暂无成盒数据（请先跑完模拟或确认 data/cartons_seed_*.csv 存在）</div>';
+      }
+      const rows = records.slice(0, 800).map(r => {
+        const p = r.parts || {};
+        const parts = ["small", "medium", "large"].filter(b => p[b]).map(b => BUCKET_LABEL[b] + p[b]).join("+");
+        const ids = (r.fish_ids || []).length ? ` · 鱼ID ${r.fish_ids.slice(0, 5).join(",")}${r.fish_ids.length > 5 ? "…" : ""}` : "";
+        return `<div class="carton-item"><strong>#${r.seq || "?"} ${String(r.spec).toUpperCase()}</strong> ${r.count}尾 ${r.weight}g · ${parts || "-"}${ids}</div>`;
+      }).join("");
+      const tail = records.length > 800 ? `<div style="color:var(--muted);font-size:12px;padding:8px 0">… 仅显示前 800 条，共 ${records.length} 盒，完整数据请导出 CSV</div>` : "";
+      return rows + tail;
+    }
+
+    function renderRemainingFish(fish) {
+      if (!fish.length) {
+        return '<div style="color:var(--muted);font-size:12px">暂无尾料（25000 条跑完后才会生成 remaining_seed_*.csv）</div>';
+      }
+      const rows = fish.slice(0, 800).map(f =>
+        `<div class="carton-item"><strong>#${f.fish_id}</strong> ${(f.spec || "-").toUpperCase()} ${f.weight}g · ${f.status || ""} · 第${f.rounds || 1}轮</div>`
+      ).join("");
+      const tail = fish.length > 800 ? `<div style="color:var(--muted);font-size:12px;padding:8px 0">… 仅显示前 800 条，共 ${fish.length} 条，完整数据请导出 CSV</div>` : "";
+      return rows + tail;
+    }
+
+    async function showDataDialog(title, jsonPath, csvPath, renderFn, pickRows) {
+      const seed = currentSeed();
+      $("dataDialogTitle").textContent = title;
+      $("dataDialogMeta").textContent = "加载中…";
+      $("dataDialogBody").innerHTML = "";
+      $("dataDialogExport").href = csvPath + "?seed=" + seed;
+      $("dataDialog").showModal();
+      try {
+        const res = await fetch(jsonPath + "?seed=" + seed);
+        const data = await res.json();
+        const rows = pickRows(data);
+        const total = data.total ?? rows.length;
+        $("dataDialogMeta").textContent = `种子 ${seed} · 共 ${total} 条`;
+        $("dataDialogBody").innerHTML = renderFn(rows);
+      } catch (e) {
+        $("dataDialogMeta").textContent = "加载失败";
+        $("dataDialogBody").innerHTML = '<div style="color:var(--red);font-size:12px">' + e + "</div>";
+      }
+    }
+
     function updateUI(state) {
       if (state.status === "idle" && !state.running) {
         setStatus("idle");
@@ -524,6 +585,22 @@
     $("btnPause").onclick = () => api("/api/pause").then(r => updateUI(r.state));
     $("btnResume").onclick = () => api("/api/resume").then(r => updateUI(r.state));
     $("btnStop").onclick = () => api("/api/stop").then(r => updateUI(r.state));
+
+    $("btnViewCartons").onclick = () => showDataDialog(
+      "成盒数据",
+      "/api/cartons",
+      "/api/cartons.csv",
+      renderCartonRecords,
+      d => d.records || []
+    );
+    $("btnViewRemaining").onclick = () => showDataDialog(
+      "未成盒尾料",
+      "/api/remaining",
+      "/api/remaining.csv",
+      renderRemainingFish,
+      d => d.fish || []
+    );
+    $("dataDialogClose").onclick = () => $("dataDialog").close();
 
     api("/api/config").then(cfg => {
       $("seed").value = cfg.default_seed;
