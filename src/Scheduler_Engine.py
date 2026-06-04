@@ -65,6 +65,9 @@ DEFAULT_MOVE_TIMEOUT = 30
 DEFAULT_CAP_FACTOR = 8
 
 
+FISH_CACHE=[]
+
+
 def _load_module(name: str, path: Path):
     spec = importlib.util.spec_from_file_location(name, path)
     mod = importlib.util.module_from_spec(spec)

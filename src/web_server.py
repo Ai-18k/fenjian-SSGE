@@ -17,8 +17,8 @@
   默认地址：http://127.0.0.1:8765  （环境变量 WEB_PORT 可改端口）
 
   两个页面（共用同一后端 SimulationRunner）：
-    /         统计面板 index.html   — 趋势、模块库存、成盒/尾料查看
-    /monitor  FIFO 动画 fifo_monitor.html — 逐条进料动画、需求广播、工位色块
+    /         统计面板 index.html（?embed=1 可嵌入监控页）
+    /monitor  FIFO 动画 + 内嵌统计标签页 fifo_monitor.html（推荐单页，避免切换丢动画状态）
 
   典型操作顺序：
     1. 打开 / ，设置种子/条数/倍速，点「开始模拟」

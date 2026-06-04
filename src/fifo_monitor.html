@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>智能分拣 FIFO 动画监控 · 需求推送</title>
+  <title>智能分拣监控 · FIFO 动画与统计</title>
   <style>
     :root{--bg:#f4f7fb;--panel:#fff;--line:#d8e3f1;--text:#1f2937;--muted:#64748b;--blue:#2563eb;--green:#16a34a;--orange:#f59e0b;--red:#ef4444;--purple:#7c3aed}
     *{box-sizing:border-box}body{margin:0;font-family:Arial,"Microsoft YaHei",sans-serif;background:var(--bg);color:var(--text)}
@@ -62,16 +62,27 @@
     #moduleState{max-height:480px;overflow-y:auto;padding-right:2px}
     .inlet-banner{background:#fef3c7;border:1px solid #fcd34d;border-radius:10px;padding:10px;font-size:12px;margin-bottom:10px}
     .bar{height:8px;background:#e2e8f0;border-radius:999px;overflow:hidden}.bar div{height:100%;background:var(--blue);width:0}
+    .view-tabs{display:flex;gap:6px;flex-wrap:wrap}
+    .view-tab{border:1px solid var(--line);border-radius:10px;padding:8px 14px;font-size:13px;font-weight:700;cursor:pointer;background:#f8fafc;color:var(--muted)}
+    .view-tab.active{background:var(--blue);border-color:var(--blue);color:#fff}
+    #statsView{display:none;padding:0 20px 24px}
+    #statsView.active{display:block}
+    #statsFrame{width:100%;min-height:calc(100vh - 88px);border:0;border-radius:14px;background:var(--panel)}
+    #fifoView.hidden{display:none}
   </style>
 </head>
 <body>
 <header>
   <div>
-    <h1>智能分拣 FIFO 动画监控</h1>
-    <p>监控每条鱼 / 每箱状态 · 发出缺鱼需求 · 进料口按地址定向推送</p>
+    <h1>智能分拣监控</h1>
+    <p>FIFO 动画与统计面板同页切换 · 不跳转页面，动画状态保持</p>
   </div>
-  <a href="/">← 返回统计面板</a>
+  <nav class="view-tabs" aria-label="视图切换">
+    <button type="button" class="view-tab active" id="tabBtnFifo">FIFO 动画</button>
+    <button type="button" class="view-tab" id="tabBtnStats">统计监控</button>
+  </nav>
 </header>
+<div id="fifoView">
 <main class="wrap">
   <section class="controls">
     <label>随机种子<input id="seedInput" type="number" value="42"></label>
@@ -114,6 +125,10 @@
     </div>
   </section>
 </main>
+</div>
+<div id="statsView">
+  <iframe id="statsFrame" title="智能分拣系统 · 可视化监控" loading="lazy"></iframe>
+</div>
 <script>
 'use strict';
 const TARGET_MIN=4980,TARGET_MAX=5030,TARGET_MID=5005;
@@ -131,6 +146,22 @@ let stats={input:0,cartons:0,directRoute:0,outsideTail:0,fifoReflow:0,batchTail:
 let currentInletDemand=null;
 let syncPollTimer=null,serverFinishedHandled=false,serverSessionKey='';
 let serverInputCount=0,intakeSynced=false;
+let activeView='fifo',statsFrameLoaded=false;
+function setActiveView(view){
+  activeView=view;
+  const fifo=$('fifoView'),stats=$('statsView');
+  $('tabBtnFifo').classList.toggle('active',view==='fifo');
+  $('tabBtnStats').classList.toggle('active',view==='stats');
+  fifo.classList.toggle('hidden',view!=='fifo');
+  stats.classList.toggle('active',view==='stats');
+  if(view==='stats'){
+    const frame=$('statsFrame');
+    if(!statsFrameLoaded){
+      frame.src='/?embed=1';
+      statsFrameLoaded=true;
+    }
+  }
+}
 
 async function apiJson(path,body){
   const opt=body?{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}:{};
@@ -162,16 +193,11 @@ function spawnBatchRow(row){
 
 function syncIntakePosition(target,allowSkip){
   serverInputCount=target;
-  if(!running||finished)stats.input=target;
+  stats.input=target;
   if(allowSkip&&!intakeSynced&&target>batchIndex){
     batchIndex=target;
-    stats.input=target;
     intakeSynced=true;
   }
-}
-function getShownInput(){
-  if(!finished&&batchIndex<serverInputCount)return batchIndex;
-  return Math.max(serverInputCount,batchIndex);
 }
 
 async function applyServerState(state,allowSkip){
@@ -560,7 +586,6 @@ function update(dt){
     if(spawnTimer>=interval&&batchIndex<serverInputCount&&batchIndex<batchFish.length){
       spawnTimer-=interval;
       spawnBatchRow(batchFish[batchIndex++]);
-      stats.input=batchIndex;
     }
     if(batchIndex>=getTotalFish()&&batchIndex>=serverInputCount&&!movingFish.length&&finished)finishBatch();
   }
@@ -585,9 +610,8 @@ function moveAlongPath(f,dtScaled){
 function updateUI(){
   let queued=0;for(const l of laneList)queued+=l.queue.length;
   const total=getTotalFish();
-  const shownInput=getShownInput();
-  $('sInput').textContent=shownInput;
-  $('progressBar').style.width=Math.min(100,shownInput/total*100)+'%';
+  $('sInput').textContent=serverInputCount;
+  $('progressBar').style.width=Math.min(100,serverInputCount/total*100)+'%';
   $('sCartons').textContent=stats.cartons;
   $('sDirect').textContent=stats.directRoute;
   $('sWip').textContent=queued+movingFish.length;
@@ -731,7 +755,7 @@ function drawTail(){
   ctx.fillText(String(stats.outsideTail),1580,1418);
 }
 function drawFish(){
-  if($('drawMode').value==='light'&&stats.input>8000)return;
+  if($('drawMode').value==='light'&&serverInputCount>8000)return;
   for(const lane of laneList)for(let i=0;i<Math.min(lane.queue.length,lane.visibleSlots);i++){
     const f=lane.queue[i];drawOneFish(f.x,f.y,f.color,f.weight,f.direct,f.id);
   }
@@ -756,6 +780,9 @@ function roundRect(x,y,w,h,r,fill,stroke,lw){ctx.beginPath();ctx.moveTo(x+r,y);c
 
 window.addEventListener('load',async function(){
   canvas=$('scene');ctx=canvas.getContext('2d');
+  $('tabBtnFifo').onclick=()=>setActiveView('fifo');
+  $('tabBtnStats').onclick=()=>setActiveView('stats');
+  if(location.hash==='#stats')setActiveView('stats');
   $('speedInput').addEventListener('input',scheduleSpeedSync);
   $('speedInput').addEventListener('change',scheduleSpeedSync);
   $('startBtn').onclick=async()=>{

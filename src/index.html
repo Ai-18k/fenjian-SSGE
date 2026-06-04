@@ -224,14 +224,40 @@
     .legend .l-small::before { background: var(--small); }
     .legend .l-mid::before { background: var(--mid); }
     .legend .l-large::before { background: var(--large); }
+    html.embed-mode header { display: none; }
+    html.embed-mode .controls { display: none; }
+    html.embed-mode main { padding: 12px 16px 20px; max-width: none; margin: 0; }
+    html.embed-mode body { min-height: auto; background: var(--bg); }
+    .embed-bar {
+      display: none;
+      padding: 10px 16px;
+      background: var(--card);
+      border-bottom: 1px solid var(--line);
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+    html.embed-mode .embed-bar { display: flex; }
   </style>
 </head>
 <body>
+  <div class="embed-bar">
+    <span style="font-size:14px;font-weight:700">统计监控</span>
+    <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+      <div id="statusPillEmbed" class="status-pill">待机</div>
+      <button type="button" class="secondary" id="btnViewCartonsEmbed">成盒数据</button>
+      <button type="button" class="secondary" id="btnViewRemainingEmbed">尾料数据</button>
+      <a id="btnReportEmbed" href="/api/report?seed=42" style="text-decoration:none">
+        <button type="button" class="secondary" disabled id="btnReportEmbedInner">下载报告</button>
+      </a>
+    </div>
+  </div>
   <header>
     <div>
       <h1>智能分拣系统 · 可视化监控</h1>
       <p>25000 条种子批次 · FIFO 小/中/大料道 · 5kg 装盒 · 超时回流
-        <a href="/monitor">→ FIFO 动画监控</a>
+        <a href="/monitor">→ FIFO 动画监控（推荐单页）</a>
       </p>
     </div>
     <div id="statusPill" class="status-pill">待机</div>
@@ -307,6 +333,9 @@
   </dialog>
 
   <script>
+    const EMBED = new URLSearchParams(location.search).get("embed") === "1";
+    if (EMBED) document.documentElement.classList.add("embed-mode");
+
     const $ = id => document.getElementById(id);
     const MODULE_META = { A: "15P~40P", B: "45P~90P", C: "100P~150P" };
     const BUCKET_LABEL = { small: "小", medium: "中", large: "大" };
@@ -325,10 +354,19 @@
     }
 
     function setStatus(st) {
-      const pill = $("statusPill");
       const map = { idle: "待机", running: "运行中", paused: "已暂停", finished: "已完成" };
-      pill.textContent = map[st] || st;
-      pill.className = "status-pill " + (st || "idle");
+      const text = map[st] || st;
+      const cls = "status-pill " + (st || "idle");
+      const pill = $("statusPill");
+      if (pill) {
+        pill.textContent = text;
+        pill.className = cls;
+      }
+      const embedPill = $("statusPillEmbed");
+      if (embedPill) {
+        embedPill.textContent = text;
+        embedPill.className = cls;
+      }
     }
 
     function renderModules(modules) {
@@ -548,8 +586,13 @@
       $("btnResume").disabled = !running || !state.paused;
       $("btnStop").disabled = !running;
       $("btnReportInner").disabled = !finished;
+      const reportInner = $("btnReportEmbedInner");
+      if (reportInner) reportInner.disabled = !finished;
       if (finished && state.seed) {
-        $("btnReport").href = "/api/report?seed=" + state.seed;
+        const href = "/api/report?seed=" + state.seed;
+        $("btnReport").href = href;
+        const reportEmbed = $("btnReportEmbed");
+        if (reportEmbed) reportEmbed.href = href;
       }
     }
 
@@ -562,44 +605,55 @@
       }
     }
 
-    $("btnStart").onclick = async () => {
-      const cur = await api("/api/state");
-      if (cur.running) {
-        updateUI(cur);
-        return;
+    function wireDataButtons(cartonsBtn, remainingBtn) {
+      if (cartonsBtn) {
+        cartonsBtn.onclick = () => showDataDialog(
+          "成盒数据",
+          "/api/cartons",
+          "/api/cartons.csv",
+          renderCartonRecords,
+          d => d.records || []
+        );
       }
-      $("logBox").innerHTML = "";
-      lastEventCount = 0;
-      const body = {
-        seed: +$("seed").value,
-        total: +$("total").value,
-        move_timeout: +$("moveTimeout").value,
-        speed: +$("speed").value,
+      if (remainingBtn) {
+        remainingBtn.onclick = () => showDataDialog(
+          "未成盒尾料",
+          "/api/remaining",
+          "/api/remaining.csv",
+          renderRemainingFish,
+          d => d.fish || []
+        );
+      }
+    }
+
+    if (!EMBED) {
+      $("btnStart").onclick = async () => {
+        const cur = await api("/api/state");
+        if (cur.running) {
+          updateUI(cur);
+          return;
+        }
+        $("logBox").innerHTML = "";
+        lastEventCount = 0;
+        const body = {
+          seed: +$("seed").value,
+          total: +$("total").value,
+          move_timeout: +$("moveTimeout").value,
+          speed: +$("speed").value,
+        };
+        $("btnReport").href = "/api/report?seed=" + body.seed;
+        const res = await api("/api/start", body);
+        if (!res.ok) { alert(res.error || "启动失败"); return; }
+        updateUI(res.state);
       };
-      $("btnReport").href = "/api/report?seed=" + body.seed;
-      const res = await api("/api/start", body);
-      if (!res.ok) { alert(res.error || "启动失败"); return; }
-      updateUI(res.state);
-    };
 
-    $("btnPause").onclick = () => api("/api/pause").then(r => updateUI(r.state));
-    $("btnResume").onclick = () => api("/api/resume").then(r => updateUI(r.state));
-    $("btnStop").onclick = () => api("/api/stop").then(r => updateUI(r.state));
+      $("btnPause").onclick = () => api("/api/pause").then(r => updateUI(r.state));
+      $("btnResume").onclick = () => api("/api/resume").then(r => updateUI(r.state));
+      $("btnStop").onclick = () => api("/api/stop").then(r => updateUI(r.state));
+    }
 
-    $("btnViewCartons").onclick = () => showDataDialog(
-      "成盒数据",
-      "/api/cartons",
-      "/api/cartons.csv",
-      renderCartonRecords,
-      d => d.records || []
-    );
-    $("btnViewRemaining").onclick = () => showDataDialog(
-      "未成盒尾料",
-      "/api/remaining",
-      "/api/remaining.csv",
-      renderRemainingFish,
-      d => d.fish || []
-    );
+    wireDataButtons($("btnViewCartons"), $("btnViewRemaining"));
+    wireDataButtons($("btnViewCartonsEmbed"), $("btnViewRemainingEmbed"));
     $("dataDialogClose").onclick = () => $("dataDialog").close();
 
     api("/api/config").then(cfg => {
