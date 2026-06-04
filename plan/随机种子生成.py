@@ -92,9 +92,13 @@ def _random_outside_weight(rng: random.Random) -> int:
     return rng.randint(VALID_MAX + 1, 850)
 
 
-def _random_inside_weight(rng: random.Random) -> tuple[int, str]:
+def _random_inside_weight(
+    rng: random.Random,
+    spec_names: list[str] | None = None,
+) -> tuple[int, str]:
     """随机选一个规格，再在该规格范围内取重量。"""
-    spec = rng.choice(SPEC_NAMES)
+    names = spec_names or SPEC_NAMES
+    spec = rng.choice(names)
     lo, hi = SPECS[spec]
     return rng.randint(lo, hi), spec
 
@@ -103,6 +107,7 @@ def generate_fish_batch(
     total: int = DEFAULT_TOTAL,
     outside_rate: float = DEFAULT_OUTSIDE_RATE,
     seed: int = DEFAULT_SEED,
+    enabled_specs: tuple[str, ...] | list[str] | None = None,
 ) -> tuple[list[FishRecord], BatchSummary]:
     """
     生成一批鱼的质量数据。
@@ -114,6 +119,9 @@ def generate_fish_batch(
     rng = random.Random(seed)
     outside_count = round(total * outside_rate)
     inside_count = total - outside_count
+    active_specs = [s for s in (enabled_specs or SPEC_NAMES) if s in SPECS]
+    if not active_specs:
+        active_specs = list(SPEC_NAMES)
 
     records: list[FishRecord] = []
     spec_counts: dict[str, int] = {s: 0 for s in SPEC_NAMES}
@@ -123,7 +131,7 @@ def generate_fish_batch(
             weight = _random_outside_weight(rng)
             records.append(FishRecord(id=i, weight=weight, spec=None, outside=True))
         else:
-            weight, spec = _random_inside_weight(rng)
+            weight, spec = _random_inside_weight(rng, active_specs)
             records.append(FishRecord(id=i, weight=weight, spec=spec, outside=False))
             spec_counts[spec] += 1
 

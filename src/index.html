@@ -392,8 +392,11 @@
           const lw = Math.max(2, (q.large / maxBar) * 100);
           const row = document.createElement("div");
           row.className = "spec-row";
+          const off = q.enabled === false;
+          row.style.opacity = off ? "0.38" : "";
+          row.title = off ? "未启用规格" : "";
           row.innerHTML = `
-            <div class="spec-name">${spec.toUpperCase()}</div>
+            <div class="spec-name">${spec.toUpperCase()}${off ? " (未启用)" : ""}</div>
             <div class="bars">
               <div class="bar small" style="width:${sw}%" title="小 ${q.small}"></div>
               <div class="bar mid" style="width:${mw}%" title="中 ${q.medium}"></div>
@@ -635,12 +638,14 @@
         }
         $("logBox").innerHTML = "";
         lastEventCount = 0;
-        const body = {
-          seed: +$("seed").value,
-          total: +$("total").value,
-          move_timeout: +$("moveTimeout").value,
-          speed: +$("speed").value,
-        };
+      const cfg = await api("/api/config");
+      const body = {
+        seed: +$("seed").value,
+        total: +$("total").value,
+        move_timeout: +$("moveTimeout").value,
+        speed: +$("speed").value,
+        enabled_specs: cfg.default_enabled_specs,
+      };
         $("btnReport").href = "/api/report?seed=" + body.seed;
         const res = await api("/api/start", body);
         if (!res.ok) { alert(res.error || "启动失败"); return; }

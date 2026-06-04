@@ -50,7 +50,8 @@ MODULE_SPECS: dict[str, tuple[str, ...]] = {
 }
 
 ALL_SPECS: tuple[str, ...] = tuple(SPECS.keys())
-DEMO_SPECS: tuple[str, ...] = ALL_SPECS
+DEFAULT_ENABLED_SPECS: tuple[str, ...] = ("15p", "20p", "25p", "30p", "35p", "40p")
+DEMO_SPECS: tuple[str, ...] = DEFAULT_ENABLED_SPECS
 
 TARGET_MIN = 4980
 TARGET_MAX = 5030
@@ -157,12 +158,59 @@ class Stats:
 # ---------------------------------------------------------------------------
 # 工具
 # ---------------------------------------------------------------------------
-def classify_spec(weight: int) -> str | None:
+def normalize_enabled_specs(
+    enabled_specs: tuple[str, ...] | list[str] | None = None,
+) -> tuple[str, ...]:
+    if not enabled_specs:
+        return DEFAULT_ENABLED_SPECS
+    valid = tuple(s for s in enabled_specs if s in SPECS)
+    return valid or DEFAULT_ENABLED_SPECS
+
+
+def classify_spec(
+    weight: int,
+    enabled: set[str] | None = None,
+) -> str | None:
     for name, info in SPECS.items():
         lo, hi = info["range"]
         if lo <= weight <= hi:
-            return name
+            if enabled is None or name in enabled:
+                return name
+            return None
     return None
+
+
+def apply_enabled_specs_to_records(
+    records: list,
+    enabled_specs: tuple[str, ...],
+) -> list:
+    """未启用规格范围内的鱼视为规格外（与 1% 规格外一致处理）。"""
+    enabled_set = set(enabled_specs)
+    out = []
+    for r in records:
+        if r.outside:
+            out.append(r)
+            continue
+        spec = classify_spec(r.weight, enabled_set)
+        if spec:
+            out.append(
+                _seed_gen.FishRecord(
+                    id=r.id,
+                    weight=r.weight,
+                    spec=spec,
+                    outside=False,
+                )
+            )
+        else:
+            out.append(
+                _seed_gen.FishRecord(
+                    id=r.id,
+                    weight=r.weight,
+                    spec=None,
+                    outside=True,
+                )
+            )
+    return out
 
 
 def classify_bucket(spec: str, weight: int) -> str:
@@ -197,12 +245,18 @@ def load_or_generate_batch(
     seed: int = DEFAULT_SEED,
     total: int = DEFAULT_TOTAL,
     csv_path: Path | None = None,
+    enabled_specs: tuple[str, ...] | list[str] | None = None,
 ) -> list:
+    enabled = normalize_enabled_specs(enabled_specs)
     csv_path = csv_path or _root / "data" / f"fish_seed_{seed}.csv"
     if not csv_path.exists():
-        records, _ = _seed_gen.generate_fish_batch(total=total, seed=seed)
+        records, _ = _seed_gen.generate_fish_batch(
+            total=total,
+            seed=seed,
+            enabled_specs=enabled,
+        )
         _seed_gen.save_csv(records, csv_path)
-        return records
+        return apply_enabled_specs_to_records(records, enabled)
     records = []
     with csv_path.open(encoding="utf-8-sig") as f:
         for row in csv.DictReader(f):
@@ -214,7 +268,7 @@ def load_or_generate_batch(
                     outside=bool(int(row["outside"])),
                 )
             )
-    return records
+    return apply_enabled_specs_to_records(records[:total], enabled)
 
 
 # ---------------------------------------------------------------------------
@@ -464,7 +518,16 @@ class SchedulerEngine:
         for mod, spec_list in MODULE_SPECS.items():
             modules[mod] = {}
             for spec in spec_list:
+                enabled = spec in self.specs
                 if spec not in self.lanes.queues:
+                    modules[mod][spec] = {
+                        "small": 0,
+                        "medium": 0,
+                        "large": 0,
+                        "total": 0,
+                        "capacity": 0,
+                        "enabled": enabled,
+                    }
                     continue
                 q = self.lanes.queues[spec]
                 cap = lane_capacity(spec, self.cap_factor)
@@ -474,6 +537,7 @@ class SchedulerEngine:
                     "large": len(q["large"]),
                     "total": self.lanes.total_in_spec(spec),
                     "capacity": cap,
+                    "enabled": enabled,
                 }
         rounds_dist: dict[str, int] = {}
         for t in self.tracker.traces.values():
@@ -504,6 +568,7 @@ class SchedulerEngine:
             "tick": self.tick,
             "finished": self.finished,
             "seed": self.seed,
+            "enabled_specs": list(self.specs),
             "total_fish": self.total_fish,
             "input_count": self.stats.input_count,
             "cartons": self.stats.cartons,

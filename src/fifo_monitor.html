@@ -69,6 +69,15 @@
     #statsView.active{display:block}
     #statsFrame{width:100%;min-height:calc(100vh - 88px);border:0;border-radius:14px;background:var(--panel)}
     #fifoView.hidden{display:none}
+    .spec-enable{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:10px 12px}
+    .spec-enable h2{margin:0 0 8px;font-size:14px}
+    .spec-mod-group{display:flex;flex-wrap:wrap;gap:6px 10px;align-items:center;margin-bottom:6px}
+    .spec-mod-group:last-child{margin-bottom:0}
+    .spec-mod-label{font-size:11px;font-weight:700;color:var(--muted);min-width:18px}
+    .spec-chip{display:inline-flex;align-items:center;gap:4px;font-size:11px;padding:4px 9px;border-radius:8px;border:1px solid var(--line);cursor:pointer;background:#f8fafc;color:#64748b;user-select:none}
+    .spec-chip.on{background:#dbeafe;border-color:#3b82f6;color:#1e40af;font-weight:700}
+    .spec-chip input{display:none}
+    .box-station-item.st-disabled{background:#f1f5f9;border-color:#e2e8f0;color:#94a3b8;opacity:.55}
   </style>
 </head>
 <body>
@@ -95,6 +104,10 @@
     <button class="secondary" id="pauseBtn">暂停</button>
     <button class="warn" id="fastBtn">快速跑完</button>
     <button class="secondary" id="resetBtn">重置</button>
+  </section>
+  <section class="spec-enable">
+    <h2>启用规格 <span style="font-size:11px;color:var(--muted);font-weight:400">未启用批次灰色显示，该重量段视为规格外</span></h2>
+    <div id="specToggles"></div>
   </section>
   <section class="stats">
     <div class="stat"><div class="n">累计来鱼</div><div class="v" id="sInput">0</div></div>
@@ -147,6 +160,58 @@ let currentInletDemand=null;
 let syncPollTimer=null,serverFinishedHandled=false,serverSessionKey='';
 let serverInputCount=0,intakeSynced=false;
 let activeView='fifo',statsFrameLoaded=false;
+let enabledSpecs=new Set(['15p','20p','25p','30p','35p','40p']);
+function isSpecEnabled(spec){return enabledSpecs.has(spec)}
+function getEnabledSpecs(){return ALL_SPECS.filter(s=>enabledSpecs.has(s))}
+function enabledSpecsQuery(){return '&enabled_specs='+encodeURIComponent(getEnabledSpecs().join(','))}
+function setEnabledSpecs(list){
+  enabledSpecs=new Set((list||[]).filter(s=>ALL_SPECS.includes(s)));
+  if(!enabledSpecs.size)enabledSpecs=new Set(['15p','20p','25p','30p','35p','40p']);
+  refreshSpecToggleUI();
+}
+function refreshSpecToggleUI(){
+  document.querySelectorAll('.spec-chip').forEach(chip=>{
+    const spec=chip.dataset.spec;
+    const on=isSpecEnabled(spec);
+    chip.classList.toggle('on',on);
+    const inp=chip.querySelector('input');
+    if(inp)inp.checked=on;
+  });
+}
+function buildSpecToggles(){
+  const root=$('specToggles');
+  root.innerHTML='';
+  for(const mod of Object.keys(MODULE_SPECS)){
+    const g=document.createElement('div');
+    g.className='spec-mod-group';
+    const label=document.createElement('span');
+    label.className='spec-mod-label';
+    label.textContent=mod;
+    g.appendChild(label);
+    for(const spec of MODULE_SPECS[mod]){
+      const chip=document.createElement('label');
+      chip.className='spec-chip'+(isSpecEnabled(spec)?' on':'');
+      chip.dataset.spec=spec;
+      chip.innerHTML='<input type="checkbox" data-spec="'+spec+'"><span>'+specName(spec)+'</span>';
+      chip.onclick=e=>{
+        e.preventDefault();
+        if(running||finished){log('运行中无法切换启用规格');return}
+        if(enabledSpecs.has(spec)&&enabledSpecs.size<=1){log('至少保留一个启用规格');return}
+        if(enabledSpecs.has(spec))enabledSpecs.delete(spec);else enabledSpecs.add(spec);
+        refreshSpecToggleUI();
+        reloadBatchForEnabledSpecs();
+      };
+      g.appendChild(chip);
+    }
+    root.appendChild(g);
+  }
+}
+async function reloadBatchForEnabledSpecs(){
+  batchLoaded=false;
+  serverSessionKey='';
+  await loadBatch();
+  draw();
+}
 function setActiveView(view){
   activeView=view;
   const fifo=$('fifoView'),stats=$('statsView');
@@ -179,6 +244,11 @@ async function ensureBatchForSession(seed,total){
 }
 
 function spawnBatchRow(row){
+  if(row.spec&&!isSpecEnabled(row.spec)){
+    spawnOutside({outside:true,weight:row.weight,id:row.id});
+    log('未启用规格段 #'+row.id+' '+row.weight+'g → 规格外');
+    return;
+  }
   if(row.outside||!row.spec){
     spawnOutside({outside:true,weight:row.weight,id:row.id});
     log('规格外 #'+row.id+' '+row.weight+'g');
@@ -219,6 +289,7 @@ async function applyServerState(state,allowSkip){
   finished=!!state.finished;
   if(state.paused)running=false;
   syncIntakePosition(state.input_count||0,!!allowSkip);
+  if(state.enabled_specs&&state.enabled_specs.length&&!running&&!finished)setEnabledSpecs(state.enabled_specs);
   if(state.finished&&!serverFinishedHandled){
     serverFinishedHandled=true;
     batchIndex=state.input_count||batchIndex;
@@ -287,7 +358,7 @@ async function loadBatch(){
   const seed=Number($('seedInput').value||42);
   const total=getTotalFish();
   log('加载种子批次 fish_seed_'+seed+' …');
-  const res=await fetch('/api/batch?seed='+seed+'&total='+total);
+  const res=await fetch('/api/batch?seed='+seed+'&total='+total+enabledSpecsQuery());
   const data=await res.json();
   batchFish=data.fish||[];
   batchIndex=0;
@@ -320,6 +391,7 @@ function normalizeLane(lane){for(let i=0;i<lane.queue.length;i++){const f=lane.q
 function prefixWeights(arr){const p=[0];for(const f of arr)p.push(p[p.length-1]+f.weight);return p}
 
 function findBestPlanForSpec(spec){
+  if(!isSpecEnabled(spec))return null;
   const qL=lanes[spec+'_light'].queue,qM=lanes[spec+'_mid'].queue,qH=lanes[spec+'_heavy'].queue;
   if(qL.length+qM.length+qH.length<Math.min(...SPECS[spec].counts))return null;
   const pL=prefixWeights(qL),pM=prefixWeights(qM),pH=prefixWeights(qH);
@@ -338,7 +410,7 @@ function findBestPlanForSpec(spec){
   }
   return best;
 }
-function findBestPlanForModule(k){let best=null;for(const spec of MODULE_SPECS[k]){const p=findBestPlanForSpec(spec);if(p&&(!best||p.score<best.score))best=p}return best}
+function findBestPlanForModule(k){let best=null;for(const spec of MODULE_SPECS[k]){if(!isSpecEnabled(spec))continue;const p=findBestPlanForSpec(spec);if(p&&(!best||p.score<best.score))best=p}return best}
 
 function bestDiagnosticForSpec(spec){
   const qL=lanes[spec+'_light'].queue,qM=lanes[spec+'_mid'].queue,qH=lanes[spec+'_heavy'].queue;
@@ -365,6 +437,9 @@ function bestDiagnosticForSpec(spec){
 }
 
 function laneDemandEntry(modKey,spec,bucket){
+  if(!isSpecEnabled(spec)){
+    return {module:modKey,spec,bucket,address:laneAddress(modKey,spec,bucket),priority:9,count:0,target:'lane',reason:'未启用',active:false};
+  }
   const lane=lanes[spec+'_'+bucket];
   const mod=modules[modKey];
   const address=laneAddress(modKey,spec,bucket);
@@ -440,6 +515,9 @@ function renderBoxStations(){
   const groups=Object.keys(MODULE_SPECS).map(modKey=>{
     const title={A:'A · 15P~40P',B:'B · 45P~90P',C:'C · 100P~150P'}[modKey]||modKey;
     const cells=MODULE_SPECS[modKey].map(spec=>{
+      if(!isSpecEnabled(spec)){
+        return '<div class="box-station-item st-disabled" title="'+specName(spec)+' 未启用"><div class="spec">'+specName(spec)+'</div><div class="phase">未启用</div><div class="detail">—</div></div>';
+      }
       const s=boxStationStatus(spec);
       const pct=Math.round((s.progress||0)*100);
       return '<div class="box-station-item st-'+s.state+'" title="'+specName(s.spec)+' · '+s.phase+' · '+s.detail+'">'+
@@ -657,7 +735,8 @@ async function fastRun(){
     seed:Number($('seedInput').value||42),
     total:getTotalFish(),
     move_timeout:getHeadTimeout(),
-    speed:Math.max(getSpeed(),200)
+    speed:Math.max(getSpeed(),200),
+    enabled_specs:getEnabledSpecs()
   };
   const cur=await apiJson('/api/state');
   if(!cur.running){
@@ -699,7 +778,7 @@ function drawFeedTrack(){
   ctx.save();ctx.translate(left-10,top+h/2);ctx.rotate(-Math.PI/2);ctx.fillText('进料轨道',0,0);ctx.restore();
   for(const spec of ALL_SPECS){
     const lane=lanes[spec+'_mid'];if(!lane)continue;
-    ctx.strokeStyle='rgba(147,197,253,.45)';ctx.lineWidth=2;
+    ctx.strokeStyle=isSpecEnabled(spec)?'rgba(147,197,253,.45)':'rgba(203,213,225,.35)';ctx.lineWidth=2;
     ctx.beginPath();ctx.moveTo(x+w/2-2,lane.y);ctx.lineTo(660,lane.y);ctx.stroke();
   }
   drawPipe([{x:470,y:128},{x:470,y:top+4},{x:x,y:top+4}],'#60a5fa',7);
@@ -721,19 +800,21 @@ function drawModule(m){
   ctx.fillStyle='#fff';ctx.font='bold 17px Arial';ctx.fillText(m.title,m.x+14,m.y+22);
   let gy=m.y+56;
   for(const spec of m.specs){
-    roundRect(m.x+14,gy-10,990,62,10,'#fff','#dbe3ef',1);
-    ctx.fillStyle=m.color;roundRect(m.x+22,gy-3,74,48,10,m.color,m.color,1);
-    ctx.fillStyle='#fff';ctx.font='bold 16px Arial';ctx.fillText(specName(spec),m.x+34,gy+18);
-    for(const b of BUCKETS){const lane=lanes[spec+'_'+b];drawLane(lane,m);drawGate(lane);drawPipe([{x:lane.x2+32,y:lane.y},{x:m.mergeX,y:lane.y}],'#bbf7d0',5)}
+    const dis=!isSpecEnabled(spec);
+    roundRect(m.x+14,gy-10,990,62,10,dis?'#f8fafc':'#fff',dis?'#e2e8f0':'#dbe3ef',1);
+    ctx.fillStyle=dis?'#cbd5e1':m.color;roundRect(m.x+22,gy-3,74,48,10,dis?'#cbd5e1':m.color,dis?'#cbd5e1':m.color,1);
+    ctx.fillStyle=dis?'#94a3b8':'#fff';ctx.font='bold 16px Arial';ctx.fillText(specName(spec),m.x+34,gy+18);
+    for(const b of BUCKETS){const lane=lanes[spec+'_'+b];drawLane(lane,m);drawGate(lane);drawPipe([{x:lane.x2+32,y:lane.y},{x:m.mergeX,y:lane.y}],dis?'#e2e8f0':'#bbf7d0',5)}
     gy+=76;
   }
   drawBox(m);
 }
 function drawLane(lane,m){
+  const dis=!isSpecEnabled(lane.spec);
   const cap=capacityForSpec(lane.spec);
-  roundRect(m.x+112,lane.y-8,30,16,8,BUCKET_COLOR[lane.bucket],'#94a3b8',1);
-  ctx.fillStyle='#0f172a';ctx.font='bold 11px Arial';ctx.fillText(bucketLabel(lane.bucket),m.x+118,lane.y+4);
-  drawConv(lane.x1,lane.y-8,lane.x2-lane.x1,16,true,'#dcfce7','#bbf7d0',null);
+  roundRect(m.x+112,lane.y-8,30,16,8,dis?'#e2e8f0':BUCKET_COLOR[lane.bucket],'#94a3b8',1);
+  ctx.fillStyle=dis?'#94a3b8':'#0f172a';ctx.font='bold 11px Arial';ctx.fillText(bucketLabel(lane.bucket),m.x+118,lane.y+4);
+  drawConv(lane.x1,lane.y-8,lane.x2-lane.x1,16,true,dis?'#f1f5f9':'#dcfce7',dis?'#e2e8f0':'#bbf7d0',null);
   ctx.fillStyle='#64748b';ctx.font='10px Arial';ctx.fillText(lane.queue.length+'/'+cap,lane.x1+4,lane.y-11);
 }
 function drawGate(lane){const x=lane.x2+8,y=lane.y-10;roundRect(x,y,24,20,5,lane.gateOpen?'#dcfce7':'#f1f5f9',lane.gateOpen?'#16a34a':'#94a3b8',1)}
@@ -804,7 +885,8 @@ window.addEventListener('load',async function(){
       seed:Number($('seedInput').value||42),
       total:getTotalFish(),
       move_timeout:getHeadTimeout(),
-      speed:getSpeed()
+      speed:getSpeed(),
+      enabled_specs:getEnabledSpecs()
     };
     const res=await apiJson('/api/start',body);
     if(!res.ok){log(res.error||'启动失败');return}
@@ -823,6 +905,11 @@ window.addEventListener('load',async function(){
   $('fastBtn').onclick=fastRun;
   $('resetBtn').onclick=reset;
   buildLayout();
+  buildSpecToggles();
+  try{
+    const cfg=await apiJson('/api/config');
+    if(cfg.default_enabled_specs)setEnabledSpecs(cfg.default_enabled_specs);
+  }catch(e){console.error(e)}
   const state=await apiJson('/api/state');
   if(state.running||state.finished){
     await applyServerState(state,true);

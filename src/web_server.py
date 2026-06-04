@@ -173,15 +173,31 @@ if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
 from Scheduler_Engine import (
+    ALL_SPECS,
+    DEFAULT_ENABLED_SPECS,
     DEFAULT_MOVE_TIMEOUT,
     DEFAULT_SEED,
     DEFAULT_TOTAL,
     MODULE_SPECS,
+    SPECS,
     TARGET_MAX,
     TARGET_MIN,
     SchedulerEngine,
     load_or_generate_batch,
+    normalize_enabled_specs,
 )
+
+
+def parse_enabled_specs(raw) -> tuple[str, ...]:
+    if raw is None:
+        return normalize_enabled_specs(None)
+    if isinstance(raw, str):
+        items = [s.strip() for s in raw.split(",") if s.strip()]
+    elif isinstance(raw, (list, tuple)):
+        items = [str(s).strip() for s in raw if str(s).strip()]
+    else:
+        return normalize_enabled_specs(None)
+    return normalize_enabled_specs(items)
 
 
 def normalize_path(raw: str) -> str:
@@ -235,7 +251,9 @@ class SimulationRunner:
         total: int = DEFAULT_TOTAL,
         move_timeout: int = DEFAULT_MOVE_TIMEOUT,
         speed: float = 10.0,
+        enabled_specs: tuple[str, ...] | list[str] | None = None,
     ) -> None:
+        enabled = parse_enabled_specs(enabled_specs)
         with self.lock:
             if self.running:
                 raise RuntimeError("模拟已在运行")
@@ -243,11 +261,12 @@ class SimulationRunner:
             self.paused = False
             self.error = None
             self.speed = max(0.1, speed)
-            records = load_or_generate_batch(seed=seed, total=total)
+            records = load_or_generate_batch(seed=seed, total=total, enabled_specs=enabled)
             self.engine = SchedulerEngine(
                 batch_records=records,
                 seed=seed,
                 move_timeout=move_timeout,
+                specs=enabled,
                 log_every=max(50, total // 50),
             )
             self.running = True
@@ -420,7 +439,8 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/batch":
             seed = int(qs.get("seed", [DEFAULT_SEED])[0])
             total = int(qs.get("total", [DEFAULT_TOTAL])[0])
-            records = load_or_generate_batch(seed=seed, total=total)
+            enabled = parse_enabled_specs(qs.get("enabled_specs"))
+            records = load_or_generate_batch(seed=seed, total=total, enabled_specs=enabled)
             payload = [
                 {
                     "id": r.id,
@@ -430,7 +450,14 @@ class Handler(BaseHTTPRequestHandler):
                 }
                 for r in records[:total]
             ]
-            return self._json({"seed": seed, "total": len(payload), "fish": payload})
+            return self._json(
+                {
+                    "seed": seed,
+                    "total": len(payload),
+                    "enabled_specs": list(enabled),
+                    "fish": payload,
+                }
+            )
 
         if path == "/api/config":
             return self._json(
@@ -438,6 +465,9 @@ class Handler(BaseHTTPRequestHandler):
                     "default_seed": DEFAULT_SEED,
                     "default_total": DEFAULT_TOTAL,
                     "default_move_timeout": DEFAULT_MOVE_TIMEOUT,
+                    "default_enabled_specs": list(DEFAULT_ENABLED_SPECS),
+                    "all_specs": list(ALL_SPECS),
+                    "spec_ranges": {k: list(v["range"]) for k, v in SPECS.items()},
                     "target_min": TARGET_MIN,
                     "target_max": TARGET_MAX,
                     "modules": {k: list(v) for k, v in MODULE_SPECS.items()},
@@ -531,6 +561,7 @@ class Handler(BaseHTTPRequestHandler):
                     total=int(body.get("total", DEFAULT_TOTAL)),
                     move_timeout=int(body.get("move_timeout", DEFAULT_MOVE_TIMEOUT)),
                     speed=float(body.get("speed", 10)),
+                    enabled_specs=body.get("enabled_specs"),
                 )
                 return self._json({"ok": True, "state": RUNNER.get_state()})
             except Exception as exc:
