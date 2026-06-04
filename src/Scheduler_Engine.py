@@ -158,12 +158,29 @@ class Stats:
 # ---------------------------------------------------------------------------
 # 工具
 # ---------------------------------------------------------------------------
+def expand_spec_list(raw: str | list[str] | tuple[str, ...] | None) -> list[str]:
+    """展开规格列表；兼容 query 中 enabled_specs=a,b,c 被解析成单元素的情况。"""
+    if raw is None:
+        return []
+    if isinstance(raw, str):
+        items = [raw]
+    else:
+        items = [str(s) for s in raw]
+    out: list[str] = []
+    for item in items:
+        for part in item.split(","):
+            name = part.strip()
+            if name:
+                out.append(name)
+    return out
+
+
 def normalize_enabled_specs(
     enabled_specs: tuple[str, ...] | list[str] | None = None,
 ) -> tuple[str, ...]:
     if not enabled_specs:
         return DEFAULT_ENABLED_SPECS
-    valid = tuple(s for s in enabled_specs if s in SPECS)
+    valid = tuple(s for s in expand_spec_list(enabled_specs) if s in SPECS)
     return valid or DEFAULT_ENABLED_SPECS
 
 
@@ -180,37 +197,32 @@ def classify_spec(
     return None
 
 
-def apply_enabled_specs_to_records(
+def enabled_specs_tag(enabled_specs: tuple[str, ...]) -> str:
+    return "-".join(enabled_specs)
+
+
+def batch_csv_path(seed: int, enabled_specs: tuple[str, ...]) -> Path:
+    tag = enabled_specs_tag(enabled_specs)
+    return _root / "data" / f"fish_seed_{seed}_en_{tag}.csv"
+
+
+def _batch_valid_for_enabled(
     records: list,
     enabled_specs: tuple[str, ...],
-) -> list:
-    """未启用规格范围内的鱼视为规格外（与 1% 规格外一致处理）。"""
+) -> bool:
+    """批次须仅含：启用规格内的鱼 + 真实规格外（<65 或 >700g）。"""
     enabled_set = set(enabled_specs)
-    out = []
     for r in records:
         if r.outside:
-            out.append(r)
+            if not _seed_gen.is_true_outside_weight(r.weight):
+                return False
             continue
         spec = classify_spec(r.weight, enabled_set)
-        if spec:
-            out.append(
-                _seed_gen.FishRecord(
-                    id=r.id,
-                    weight=r.weight,
-                    spec=spec,
-                    outside=False,
-                )
-            )
-        else:
-            out.append(
-                _seed_gen.FishRecord(
-                    id=r.id,
-                    weight=r.weight,
-                    spec=None,
-                    outside=True,
-                )
-            )
-    return out
+        if not spec:
+            return False
+        if r.spec and r.spec not in enabled_set:
+            return False
+    return True
 
 
 def classify_bucket(spec: str, weight: int) -> str:
@@ -228,8 +240,17 @@ def lane_capacity(spec: str, cap_factor: int = DEFAULT_CAP_FACTOR) -> int:
     return math.ceil(max(SPECS[spec]["counts"]) * cap_factor / 3)
 
 
-def record_to_fish(record, tick: int) -> Fish:
-    spec = record.spec if not record.outside else None
+def record_to_fish(
+    record,
+    tick: int,
+    enabled: set[str] | None = None,
+) -> Fish:
+    if record.outside:
+        spec = None
+    elif enabled is not None:
+        spec = classify_spec(record.weight, enabled)
+    else:
+        spec = record.spec
     bucket = classify_bucket(spec, record.weight) if spec else None
     return Fish(
         id=record.id,
@@ -241,22 +262,7 @@ def record_to_fish(record, tick: int) -> Fish:
     )
 
 
-def load_or_generate_batch(
-    seed: int = DEFAULT_SEED,
-    total: int = DEFAULT_TOTAL,
-    csv_path: Path | None = None,
-    enabled_specs: tuple[str, ...] | list[str] | None = None,
-) -> list:
-    enabled = normalize_enabled_specs(enabled_specs)
-    csv_path = csv_path or _root / "data" / f"fish_seed_{seed}.csv"
-    if not csv_path.exists():
-        records, _ = _seed_gen.generate_fish_batch(
-            total=total,
-            seed=seed,
-            enabled_specs=enabled,
-        )
-        _seed_gen.save_csv(records, csv_path)
-        return apply_enabled_specs_to_records(records, enabled)
+def _load_batch_csv(csv_path: Path) -> list:
     records = []
     with csv_path.open(encoding="utf-8-sig") as f:
         for row in csv.DictReader(f):
@@ -268,7 +274,29 @@ def load_or_generate_batch(
                     outside=bool(int(row["outside"])),
                 )
             )
-    return apply_enabled_specs_to_records(records[:total], enabled)
+    return records
+
+
+def load_or_generate_batch(
+    seed: int = DEFAULT_SEED,
+    total: int = DEFAULT_TOTAL,
+    csv_path: Path | None = None,
+    enabled_specs: tuple[str, ...] | list[str] | None = None,
+) -> list:
+    """按启用规格生成/加载批次：只在启用重量段内随机，约 1% 为 <65 或 >700g 真规格外。"""
+    enabled = normalize_enabled_specs(enabled_specs)
+    csv_path = csv_path or batch_csv_path(seed, enabled)
+    if csv_path.exists():
+        cached = _load_batch_csv(csv_path)[:total]
+        if len(cached) >= total and _batch_valid_for_enabled(cached, enabled):
+            return cached[:total]
+    records, _ = _seed_gen.generate_fish_batch(
+        total=total,
+        seed=seed,
+        enabled_specs=enabled,
+    )
+    _seed_gen.save_csv(records, csv_path)
+    return records[:total]
 
 
 # ---------------------------------------------------------------------------
@@ -743,7 +771,7 @@ class SchedulerEngine:
         self._cursor += 1
         self.stats.input_count += 1
 
-        fish = record_to_fish(record, self.tick)
+        fish = record_to_fish(record, self.tick, enabled=set(self.specs))
         if record.outside or fish.spec is None:
             self.stats.outside_count += 1
             self.lanes.enqueue(fish, self.tick, self.tracker)

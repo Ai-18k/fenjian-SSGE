@@ -106,7 +106,7 @@
     <button class="secondary" id="resetBtn">重置</button>
   </section>
   <section class="spec-enable">
-    <h2>启用规格 <span style="font-size:11px;color:var(--muted);font-weight:400">未启用批次灰色显示，该重量段视为规格外</span></h2>
+    <h2>启用规格 <span style="font-size:11px;color:var(--muted);font-weight:400">未启用批次灰色显示且不生成；仅约1%为&lt;65或&gt;700g真规格外</span></h2>
     <div id="specToggles"></div>
   </section>
   <section class="stats">
@@ -167,6 +167,7 @@ function enabledSpecsQuery(){return '&enabled_specs='+encodeURIComponent(getEnab
 function setEnabledSpecs(list){
   enabledSpecs=new Set((list||[]).filter(s=>ALL_SPECS.includes(s)));
   if(!enabledSpecs.size)enabledSpecs=new Set(['15p','20p','25p','30p','35p','40p']);
+  try{sessionStorage.setItem('enabled_specs',JSON.stringify(getEnabledSpecs()))}catch(e){}
   refreshSpecToggleUI();
 }
 function refreshSpecToggleUI(){
@@ -235,7 +236,7 @@ async function apiJson(path,body){
 }
 
 async function ensureBatchForSession(seed,total){
-  const key=seed+'_'+total;
+  const key=seed+'_'+total+'_'+getEnabledSpecs().join(',');
   if(batchLoaded&&serverSessionKey===key)return;
   $('seedInput').value=seed;
   $('totalFish').value=total;
@@ -244,14 +245,14 @@ async function ensureBatchForSession(seed,total){
 }
 
 function spawnBatchRow(row){
-  if(row.spec&&!isSpecEnabled(row.spec)){
-    spawnOutside({outside:true,weight:row.weight,id:row.id});
-    log('未启用规格段 #'+row.id+' '+row.weight+'g → 规格外');
-    return;
-  }
   if(row.outside||!row.spec){
     spawnOutside({outside:true,weight:row.weight,id:row.id});
     log('规格外 #'+row.id+' '+row.weight+'g');
+    return;
+  }
+  if(!isSpecEnabled(row.spec)){
+    spawnOutside({outside:true,weight:row.weight,id:row.id});
+    log('未启用规格 '+specName(row.spec)+' #'+row.id+' '+row.weight+'g → 尾料轨');
     return;
   }
   const item={spec:row.spec,weight:row.weight,id:row.id};
@@ -357,14 +358,16 @@ function log(msg){const box=$('log');const d=document.createElement('div');d.tex
 async function loadBatch(){
   const seed=Number($('seedInput').value||42);
   const total=getTotalFish();
-  log('加载种子批次 fish_seed_'+seed+' …');
+  const enabled=getEnabledSpecs().join(',');
+  log('加载批次 seed='+seed+' 启用='+enabled+' …');
   const res=await fetch('/api/batch?seed='+seed+'&total='+total+enabledSpecsQuery());
   const data=await res.json();
   batchFish=data.fish||[];
   batchIndex=0;
   batchLoaded=true;
-  serverSessionKey=seed+'_'+total;
-  log('批次就绪：'+batchFish.length+' 条');
+  serverSessionKey=seed+'_'+total+'_'+enabled;
+  const outsideN=batchFish.filter(f=>f.outside).length;
+  log('批次就绪：'+batchFish.length+' 条（规格外 '+outsideN+'，仅真规格外）');
 }
 
 function buildLayout(){

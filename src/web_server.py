@@ -97,6 +97,7 @@
   【status 含义】
     unmatched_tail     批末料道剩余
     unmatched_reflow   回流后仍未再装
+
     unmatched_outside  规格外
 
 五、FIFO 动画页（/monitor）要点
@@ -111,6 +112,7 @@
     （统计面板不含装箱动画工位，仅 FIFO 页展示）
 
   5.3 运行日志
+
     fifo_monitor.html 中 .log 控制日志区域高度（当前 360px）。
 
   5.4 与统计面板同步
@@ -189,15 +191,10 @@ from Scheduler_Engine import (
 
 
 def parse_enabled_specs(raw) -> tuple[str, ...]:
+    """解析启用规格；GET 查询 enabled_specs=60p,70p 时 parse_qs 常为 ['60p,70p'] 单元素。"""
     if raw is None:
         return normalize_enabled_specs(None)
-    if isinstance(raw, str):
-        items = [s.strip() for s in raw.split(",") if s.strip()]
-    elif isinstance(raw, (list, tuple)):
-        items = [str(s).strip() for s in raw if str(s).strip()]
-    else:
-        return normalize_enabled_specs(None)
-    return normalize_enabled_specs(items)
+    return normalize_enabled_specs(raw)
 
 
 def normalize_path(raw: str) -> str:

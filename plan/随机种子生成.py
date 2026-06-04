@@ -85,6 +85,11 @@ def is_valid_weight(weight: int) -> bool:
     return VALID_MIN <= weight <= VALID_MAX
 
 
+def is_true_outside_weight(weight: int) -> bool:
+    """仅 65–700g 之外视为规格外（与 1% 规格外定义一致）。"""
+    return weight < VALID_MIN or weight > VALID_MAX
+
+
 def _random_outside_weight(rng: random.Random) -> int:
     """生成不在 65-700g 范围内的重量。"""
     if rng.random() < 0.5:

@@ -639,12 +639,20 @@
         $("logBox").innerHTML = "";
         lastEventCount = 0;
       const cfg = await api("/api/config");
+      let enabledSpecs = cfg.default_enabled_specs;
+      try {
+        const saved = sessionStorage.getItem("enabled_specs");
+        if (saved) {
+          const parsed = JSON.parse(saved);
+          if (Array.isArray(parsed) && parsed.length) enabledSpecs = parsed;
+        }
+      } catch (_) {}
       const body = {
         seed: +$("seed").value,
         total: +$("total").value,
         move_timeout: +$("moveTimeout").value,
         speed: +$("speed").value,
-        enabled_specs: cfg.default_enabled_specs,
+        enabled_specs: enabledSpecs,
       };
         $("btnReport").href = "/api/report?seed=" + body.seed;
         const res = await api("/api/start", body);
