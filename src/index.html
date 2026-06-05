@@ -177,9 +177,33 @@
     .bar.large { background: var(--large); }
     .spec-total { text-align: right; color: var(--muted); }
 
+    .chart-legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 14px 18px;
+      font-size: 11px;
+      color: var(--muted);
+      margin-bottom: 10px;
+    }
+    .chart-legend span {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .chart-legend span::before {
+      content: "";
+      display: inline-block;
+      width: 18px;
+      height: 3px;
+      border-radius: 2px;
+      vertical-align: middle;
+    }
+    .chart-legend .l-input::before { background: var(--blue); }
+    .chart-legend .l-cartons::before { background: var(--green); }
+    .chart-legend .l-reflow::before { background: var(--amber); }
     canvas#chart {
       width: 100%;
-      height: 180px;
+      height: 200px;
       display: block;
     }
 
@@ -340,7 +364,12 @@
       <div>
         <div class="panel" style="margin-bottom:18px">
           <h2>趋势 · 装盒 / 回流 / 入料</h2>
-          <canvas id="chart" width="900" height="180"></canvas>
+          <div class="chart-legend" aria-hidden="false">
+            <span class="l-input">入料（累计条数）</span>
+            <span class="l-cartons">装盒（累计箱数）</span>
+            <span class="l-reflow">回流（累计次数）</span>
+          </div>
+          <canvas id="chart" width="900" height="200"></canvas>
         </div>
 
         <div id="modulePanels"></div>
@@ -454,20 +483,55 @@
       ctx.clearRect(0, 0, w, h);
       if (!history || history.length < 2) return;
 
-      const pad = { l: 44, r: 16, t: 12, b: 28 };
-      const xs = history.map(p => p.tick);
-      const maxTick = Math.max(...xs, 1);
+      const pad = { l: 48, r: 16, t: 16, b: 40 };
+      const maxTick = Math.max(...history.map(p => p.tick), 1);
       const maxVal = Math.max(...history.map(p => Math.max(p.input, p.cartons, p.reflow)), 1);
 
       const xScale = x => pad.l + (x / maxTick) * (w - pad.l - pad.r);
       const yScale = y => h - pad.b - (y / maxVal) * (h - pad.t - pad.b);
 
+      ctx.font = "11px sans-serif";
+      ctx.fillStyle = "#64748b";
+
+      const yTicks = [0, Math.round(maxVal / 2), maxVal];
+      yTicks.forEach(v => {
+        const y = yScale(v);
+        ctx.strokeStyle = v === 0 ? "#e2e8f0" : "#f1f5f9";
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(pad.l, y);
+        ctx.lineTo(w - pad.r, y);
+        ctx.stroke();
+        ctx.textAlign = "right";
+        ctx.textBaseline = "middle";
+        ctx.fillText(String(v), pad.l - 8, y);
+      });
+
+      const xDivs = 4;
+      for (let i = 0; i <= xDivs; i++) {
+        const tick = Math.round((maxTick * i) / xDivs);
+        const x = xScale(tick);
+        ctx.strokeStyle = i === 0 ? "#e2e8f0" : "#f8fafc";
+        ctx.beginPath();
+        ctx.moveTo(x, pad.t);
+        ctx.lineTo(x, h - pad.b);
+        ctx.stroke();
+        ctx.textAlign = "center";
+        ctx.textBaseline = "top";
+        ctx.fillText(String(tick), x, h - pad.b + 6);
+      }
+
       ctx.strokeStyle = "#e2e8f0";
+      ctx.lineWidth = 1;
       ctx.beginPath();
       ctx.moveTo(pad.l, pad.t);
       ctx.lineTo(pad.l, h - pad.b);
       ctx.lineTo(w - pad.r, h - pad.b);
       ctx.stroke();
+
+      ctx.textAlign = "center";
+      ctx.textBaseline = "bottom";
+      ctx.fillText("模拟时间 (s)", pad.l + (w - pad.l - pad.r) / 2, h - 2);
 
       function line(key, color) {
         ctx.strokeStyle = color;
@@ -482,11 +546,6 @@
       line("input", "#2563eb");
       line("cartons", "#16a34a");
       line("reflow", "#d97706");
-
-      ctx.fillStyle = "#64748b";
-      ctx.font = "11px sans-serif";
-      ctx.fillText("0", 8, h - pad.b);
-      ctx.fillText(String(maxVal), 8, pad.t + 4);
     }
 
     function appendLogs(events) {
