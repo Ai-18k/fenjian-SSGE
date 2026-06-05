@@ -195,6 +195,7 @@ let stats={input:0,cartons:0,directRoute:0,outsideTail:0,fifoReflow:0,batchTail:
 let currentInletDemand=null;
 let syncPollTimer=null,serverFinishedHandled=false,serverSessionKey='';
 let serverInputCount=0,intakeSynced=false;
+let serverDemands=null,serverInletDemand=null,serverDemandTick=0;
 let activeView='fifo',statsFrameLoaded=false;
 let enabledSpecs=new Set(['15p','20p','25p','30p','35p','40p']);
 function isSpecEnabled(spec){return enabledSpecs.has(spec)}
@@ -292,7 +293,7 @@ function spawnBatchRow(row){
     return;
   }
   const item={spec:row.spec,weight:row.weight,id:row.id};
-  currentInletDemand=getInletDemand();
+  currentInletDemand=getInletDemandForUI();
   const demand=findMatchingDemand(item);
   if(demand)routeToAddress(item,demand);
   else spawnNormal(item);
@@ -311,7 +312,10 @@ async function applyServerState(state,allowSkip){
   if(!state||(state.status==='idle'&&!state.running)||(!state.running&&!state.finished&&!state.paused)){
     running=false;
     if(!state||state.status==='idle'||(!state.running&&!state.finished)){
-      if(!state||state.status==='idle'){finished=false;serverFinishedHandled=false;intakeSynced=false}
+      if(!state||state.status==='idle'){
+        finished=false;serverFinishedHandled=false;intakeSynced=false;
+        serverDemands=null;serverInletDemand=null;serverDemandTick=0;
+      }
     }
     if(state&&state.input_count!=null)syncIntakePosition(state.input_count,false);
     return;
@@ -319,17 +323,29 @@ async function applyServerState(state,allowSkip){
   const seed=state.seed!=null?state.seed:Number($('seedInput').value||42);
   const total=state.total_fish||getTotalFish();
   await ensureBatchForSession(seed,total);
-  if(state.running&&!state.paused&&!state.finished){
+  finished=!!state.finished;
+  if(state.paused){
+    running=false;
+  }else if(state.running&&!state.finished){
     running=true;
     scheduleSpeedSync();
-  }else running=false;
-  finished=!!state.finished;
-  if(state.paused)running=false;
+  }else if(state.finished){
+    const localDone=batchIndex>=(state.input_count||0)&&!movingFish.length;
+    running=!localDone;
+  }else{
+    running=false;
+  }
+  if(state.demands){
+    serverDemands=state.demands;
+    serverInletDemand=state.inlet_demand||null;
+    serverDemandTick=state.tick||0;
+  }
+  if(state.cartons!=null)stats.cartons=state.cartons;
   syncIntakePosition(state.input_count||0,!!allowSkip);
   if(state.enabled_specs&&state.enabled_specs.length&&!running&&!finished)setEnabledSpecs(state.enabled_specs);
   if(state.finished&&!serverFinishedHandled){
     serverFinishedHandled=true;
-    batchIndex=state.input_count||batchIndex;
+    if(allowSkip)batchIndex=state.input_count||batchIndex;
     intakeSynced=true;
     let tail=0;for(const lane of laneList)tail+=lane.queue.length;
     stats.batchTail=tail;
@@ -342,6 +358,7 @@ async function pollServerState(){
   try{
     const state=await apiJson('/api/state');
     await applyServerState(state,false);
+    updateUI();
   }catch(e){console.error(e)}
 }
 
@@ -613,15 +630,26 @@ function renderBoxStations(){
   return legend+groups;
 }
 
+function getDemandsForUI(){
+  if(serverDemands&&(running||finished))return serverDemands;
+  return collectDemands();
+}
+
+function getInletDemandForUI(){
+  if(serverInletDemand&&(running||finished))return serverInletDemand;
+  const demands=getDemandsForUI();
+  return demands.find(d=>d.active&&d.priority<=3)||demands.find(d=>d.active)||null;
+}
+
 function findMatchingDemand(item){
   const mod=moduleOfSpec(item.spec),bucket=bucketOf(item.spec,item.weight);
-  const demands=collectDemands();
+  const demands=getDemandsForUI();
   return demands.find(d=>d.active&&d.module===mod&&d.spec===item.spec&&d.bucket===bucket)||null;
 }
 
 function getInletDemand(){
   const demands=collectDemands();
-  return demands.find(d=>d.active&&d.priority<=3)||demands[0]||null;
+  return demands.find(d=>d.active&&d.priority<=3)||demands.find(d=>d.active)||null;
 }
 
 function enqueueToLane(lane,f){
@@ -629,8 +657,17 @@ function enqueueToLane(lane,f){
   f.state='queued';f.enterTime=simTime;lane.queue.push(f);normalizeLane(lane);return true;
 }
 
+function laneFromDemand(demand){
+  const id=demand.laneId||demand.lane_id||(demand.spec&&demand.bucket?demand.spec+'_'+demand.bucket:null);
+  return id?lanes[id]:null;
+}
+
 function routeToAddress(item,demand){
-  const lane=lanes[demand.laneId],mod=modules[demand.module];
+  const lane=laneFromDemand(demand),mod=modules[demand.module];
+  if(!lane||!mod){
+    spawnNormal(item);
+    return;
+  }
   const bucket=bucketOf(item.spec,item.weight);
   const f=createFish(item.spec,item.weight,bucket,item.id);
   f.direct=true;stats.directRoute++;
@@ -745,7 +782,7 @@ function update(dt){
     const interval=1/sp;
     if(spawnTimer>=interval&&batchIndex<serverInputCount&&batchIndex<batchFish.length){
       spawnTimer-=interval;
-      spawnBatchRow(batchFish[batchIndex++]);
+      try{spawnBatchRow(batchFish[batchIndex++])}catch(e){console.error('spawnBatchRow',e);batchIndex++}
     }
     if(batchIndex>=getTotalFish()&&batchIndex>=serverInputCount&&!movingFish.length&&finished)finishBatch();
   }
@@ -776,29 +813,35 @@ function updateUI(){
   $('sDirect').textContent=stats.directRoute;
   $('sWip').textContent=queued+movingFish.length;
   $('sReflow').textContent=stats.outsideTail+stats.fifoReflow+stats.batchTail;
-  const demands=collectDemands();
-  const activeN=demands.filter(d=>d.active).length;
-  $('sDemand').textContent=demands.length;
-  $('demandHint').textContent='(共 '+demands.length+' 路 · 活跃 '+activeN+')';
-  const inlet=getInletDemand();
+  const demands=getDemandsForUI();
+  const activeList=demands.filter(d=>d.active);
+  const activeN=activeList.length;
+  $('sDemand').textContent=activeN;
+  const fromServer=serverDemands&&(running||finished);
+  $('demandHint').textContent=fromServer
+    ? '(后端 t='+serverDemandTick+' · 活跃 '+activeN+' 路)'
+    : (running||finished?'(本地估算 · 活跃 '+activeN+' 路)':'(等待开始)');
+  const inlet=getInletDemandForUI();
   $('inletBanner').innerHTML=inlet
     ? '<strong>进料口广播地址：</strong><span class="demand-addr">'+inlet.address+'</span> 需要 '
       +bucketLabel(inlet.bucket)+'鱼 × '+inlet.count+' <span class="pill info">'+inlet.reason+'</span>'
-    : '暂无优先需求，常规 FIFO 入料（'+demands.length+' 路监控中）';
-  $('demandPanel').innerHTML=demands.length?demands.map(d=>
+      +(fromServer?' <span style="font-size:11px;color:#64748b">· 后端 t='+serverDemandTick+'</span>':'')
+    : (fromServer?'暂无活跃需求，常规 FIFO 入料':'暂无优先需求，常规 FIFO 入料');
+  $('demandPanel').innerHTML=activeList.length?activeList.map(d=>
     '<div class="demand-card'+(inlet&&inlet.address===d.address?' active':'')+'">'+
-    '<span class="pill '+(d.priority<=2?'good':d.active?'warn':'info')+'">P'+d.priority+'</span> '+
+    '<span class="pill '+(d.priority<=2?'good':d.priority===3?'warn':'info')+'">P'+d.priority+'</span> '+
     '<span class="demand-addr">'+d.address+'</span><br>'+
     bucketLabel(d.bucket)+' × '+d.count+' · '+d.reason+' · 目标:'+(d.target==='box'?'装箱工位':'料道')+
-    '</div>').join(''):'<div style="color:#64748b;font-size:12px">暂无需求</div>';
+    '</div>').join(''):'<div style="color:#64748b;font-size:12px">'+(fromServer?'当前无活跃需求':'暂无需求')+'</div>';
   $('moduleState').innerHTML=renderBoxStations();
 }
 
-function frame(ts){if(!lastTs)lastTs=ts;const dt=Math.min(.05,(ts-lastTs)/1000);lastTs=ts;if(running)update(dt);draw();requestAnimationFrame(frame)}
+function frame(ts){if(!lastTs)lastTs=ts;const dt=Math.min(.05,(ts-lastTs)/1000);lastTs=ts;if(running)update(dt);else updateUI();draw();requestAnimationFrame(frame)}
 
 async function resetLocal(){
   running=false;finished=false;lastTs=0;beltPhase=0;spawnTimer=0;simTime=0;cartonSeq=0;
   serverFinishedHandled=false;serverSessionKey='';serverInputCount=0;intakeSynced=false;
+  serverDemands=null;serverInletDemand=null;serverDemandTick=0;
   movingFish=[];stats={input:0,cartons:0,directRoute:0,outsideTail:0,fifoReflow:0,batchTail:0,overflow:0,timeout:0};
   batchIndex=0;
   buildLayout();await loadBatch();updateUI();draw();
@@ -871,8 +914,8 @@ function drawUpstream(){
   drawConv(285,70,90,42,true,'#dbeafe','#93c5fd','称重');
   roundRect(405,52,130,76,12,'#dbeafe','#60a5fa',1.5);
   ctx.fillStyle='#1e40af';ctx.font='bold 13px Arial';ctx.fillText('需求匹配/推送',415,78);
-  if(currentInletDemand||getInletDemand()){
-    const d=getInletDemand();if(d){ctx.fillStyle='#92400e';ctx.font='11px Arial';ctx.fillText('→ '+d.address,415,98)}
+  if(currentInletDemand||getInletDemandForUI()){
+    const d=getInletDemandForUI();if(d){ctx.fillStyle='#92400e';ctx.font='11px Arial';ctx.fillText('→ '+d.address,415,98)}
   }
   drawPipe([{x:535,y:91},{x:470,y:91},{x:470,y:128}],'#93c5fd',8);
 }

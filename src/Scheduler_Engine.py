@@ -553,9 +553,21 @@ class BoxPlanner:
         return best
 
 
-# ---------------------------------------------------------------------------
-# 调度引擎
-# ---------------------------------------------------------------------------
+UI_BUCKET = {"small": "light", "medium": "mid", "large": "heavy"}
+
+
+def module_of_spec(spec: str) -> str:
+    for mod, spec_list in MODULE_SPECS.items():
+        if spec in spec_list:
+            return mod
+    return "A"
+
+
+def lane_address(mod: str, spec: str, bucket: str) -> str:
+    ui = UI_BUCKET.get(bucket, bucket)
+    return f"{mod}/{spec}/{ui}"
+
+
 class SchedulerEngine:
     def __init__(
         self,
@@ -596,6 +608,118 @@ class SchedulerEngine:
         self.events.append(evt)
         if len(self.events) > 300:
             self.events.pop(0)
+
+    def _best_diagnostic_for_spec(self, spec: str) -> dict:
+        if spec not in self.specs:
+            return {"kind": "off", "short": "未启用", "need_bucket": None, "need_count": 0}
+        q = self.lanes.queues[spec]
+        q_small, q_medium, q_large = q["small"], q["medium"], q["large"]
+        total = len(q_small) + len(q_medium) + len(q_large)
+        min_cnt = min(SPECS[spec]["counts"])
+        if total < min_cnt:
+            return {
+                "kind": "bad",
+                "short": "不足",
+                "need_bucket": None,
+                "need_count": min_cnt - total,
+            }
+        if self.planner.find_plan(self.lanes, spec):
+            return {"kind": "good", "short": "可装", "need_bucket": None, "need_count": 0}
+        p_small = prefix_weights(q_small)
+        p_medium = prefix_weights(q_medium)
+        p_large = prefix_weights(q_large)
+        best: dict | None = None
+        for count in SPECS[spec]["counts"]:
+            for a in range(min(len(q_small), count) + 1):
+                for b in range(min(len(q_medium), count - a) + 1):
+                    c = count - a - b
+                    if c > len(q_large):
+                        continue
+                    weight = p_small[a] + p_medium[b] + p_large[c]
+                    if weight < TARGET_MIN:
+                        diff = TARGET_MIN - weight
+                    elif weight > TARGET_MAX:
+                        diff = weight - TARGET_MAX
+                    else:
+                        diff = 0
+                    score = diff * 10 + abs(weight - TARGET_MID)
+                    if best is None or score < best["score"]:
+                        best = {"count": count, "weight": weight, "diff": diff, "score": score}
+        if not best:
+            return {"kind": "bad", "short": "等待", "need_bucket": "medium", "need_count": 1}
+        if best["weight"] < TARGET_MIN:
+            return {"kind": "warn", "short": "偏轻", "need_bucket": "large", "need_count": 1}
+        if best["weight"] > TARGET_MAX:
+            return {"kind": "warn", "short": "偏重", "need_bucket": "small", "need_count": 1}
+        return {"kind": "good", "short": "接近", "need_bucket": None, "need_count": 0}
+
+    def _lane_demand_entry(self, mod_key: str, spec: str, bucket: str) -> dict:
+        ui_bucket = UI_BUCKET[bucket]
+        address = lane_address(mod_key, spec, bucket)
+        base = {
+            "module": mod_key,
+            "spec": spec,
+            "bucket": ui_bucket,
+            "address": address,
+            "lane_id": f"{spec}_{ui_bucket}",
+            "lane_bucket": bucket,
+        }
+        if spec not in self.specs:
+            return {
+                **base,
+                "priority": 9,
+                "count": 0,
+                "target": "lane",
+                "reason": "未启用",
+                "active": False,
+            }
+        lane = self.lanes.queues[spec][bucket]
+        diag = self._best_diagnostic_for_spec(spec)
+        queued = len(lane)
+        if diag["need_bucket"] == bucket:
+            return {
+                **base,
+                "priority": 2 if diag["kind"] == "bad" else 3,
+                "count": diag["need_count"] or 1,
+                "target": "lane",
+                "reason": diag["short"],
+                "active": True,
+            }
+        if diag["kind"] == "bad" and diag["need_bucket"] is None and bucket == "medium":
+            return {
+                **base,
+                "priority": 2,
+                "count": diag["need_count"] or 1,
+                "target": "lane",
+                "reason": "不足",
+                "active": True,
+            }
+        if diag["kind"] == "good":
+            return {
+                **base,
+                "priority": 4 if queued else 5,
+                "count": queued,
+                "target": "lane",
+                "reason": f"料道{queued}条" if queued else "可装",
+                "active": queued > 0,
+            }
+        return {
+            **base,
+            "priority": 4 if queued else 5,
+            "count": queued,
+            "target": "lane",
+            "reason": f"料道{queued}条" if queued else "监控",
+            "active": False,
+        }
+
+    def collect_demands(self) -> list[dict]:
+        items: list[dict] = []
+        for mod_key, spec_list in MODULE_SPECS.items():
+            for spec in spec_list:
+                for bucket in BUCKETS:
+                    items.append(self._lane_demand_entry(mod_key, spec, bucket))
+        items.sort(key=lambda d: (d["priority"], d["address"]))
+        return items
 
     def get_snapshot(self) -> dict:
         modules: dict[str, dict] = {}
@@ -652,6 +776,12 @@ class SchedulerEngine:
         remaining_fish = (
             self.tracker.remaining_records(end_tick=self.tick) if self.finished else []
         )
+        demands = self.collect_demands()
+        active_demands = [d for d in demands if d.get("active")]
+        inlet_demand = next(
+            (d for d in demands if d.get("active") and d.get("priority", 9) <= 3),
+            active_demands[0] if active_demands else None,
+        )
         return {
             "tick": self.tick,
             "finished": self.finished,
@@ -677,6 +807,10 @@ class SchedulerEngine:
             "remaining_count": len(remaining_fish),
             "events": self.events[-40:],
             "timeout_reflow_log": self.timeout_reflow_log,
+            "demands": demands,
+            "active_demands": active_demands,
+            "active_demand_count": len(active_demands),
+            "inlet_demand": inlet_demand,
             "history": self.history[-120:],
             "rounds_top": dict(sorted(rounds_dist.items(), key=lambda x: int(x[0]))[:12]),
             "target": {"min": TARGET_MIN, "max": TARGET_MAX},
