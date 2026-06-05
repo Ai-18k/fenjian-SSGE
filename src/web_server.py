@@ -176,18 +176,33 @@ if str(SRC_DIR) not in sys.path:
 
 from Scheduler_Engine import (
     ALL_SPECS,
+    BUCKET_RANGES,
     DEFAULT_ENABLED_SPECS,
     DEFAULT_MOVE_TIMEOUT,
     DEFAULT_SEED,
     DEFAULT_TOTAL,
+    FishTrace,
     MODULE_SPECS,
     SPECS,
     TARGET_MAX,
     TARGET_MIN,
     SchedulerEngine,
+    describe_tail_trace,
     load_or_generate_batch,
     normalize_enabled_specs,
 )
+
+
+def bucket_ranges_for_api() -> dict[str, dict[str, list[int]]]:
+    """各规格小/中/大重量区间，与 plan/细分规则.py、Scheduler_Engine 一致。"""
+    return {
+        spec: {
+            "small": list(br.small),
+            "medium": list(br.medium),
+            "large": list(br.large),
+        }
+        for spec, br in BUCKET_RANGES.items()
+    }
 
 
 def parse_enabled_specs(raw) -> tuple[str, ...]:
@@ -328,39 +343,76 @@ def _read_csv_rows(path: Path) -> list[dict]:
         return list(csv.DictReader(f))
 
 
+def _parse_pipe_ints(raw: str) -> list[int]:
+    return [int(x) for x in (raw or "").split("|") if x.strip().isdigit()]
+
+
 def _cartons_from_disk(seed: int) -> dict:
     rows = _read_csv_rows(ROOT_DIR / "data" / f"cartons_seed_{seed}.csv")
-    records = [
-        {
-            "seq": int(r["carton_seq"]),
-            "spec": r["spec"],
-            "count": int(r["count"]),
-            "weight": int(r["weight"]),
-            "parts": {
-                "small": int(r.get("small") or 0),
-                "medium": int(r.get("medium") or 0),
-                "large": int(r.get("large") or 0),
-            },
-            "fish_ids": [int(x) for x in (r.get("fish_ids") or "").split("|") if x],
-        }
-        for r in rows
-    ]
+    records = []
+    for r in rows:
+        fish_ids = _parse_pipe_ints(r.get("fish_ids") or "")
+        fish_weights = _parse_pipe_ints(r.get("fish_weights") or "")
+        fish_buckets = [b for b in (r.get("fish_buckets") or "").split("|") if b != ""]
+        fish = []
+        for i, fid in enumerate(fish_ids):
+            fish.append(
+                {
+                    "id": fid,
+                    "weight": fish_weights[i] if i < len(fish_weights) else None,
+                    "bucket": fish_buckets[i] if i < len(fish_buckets) else "",
+                }
+            )
+        records.append(
+            {
+                "seq": int(r["carton_seq"]),
+                "spec": r["spec"],
+                "count": int(r["count"]),
+                "weight": int(r["weight"]),
+                "parts": {
+                    "small": int(r.get("small") or 0),
+                    "medium": int(r.get("medium") or 0),
+                    "large": int(r.get("large") or 0),
+                },
+                "fish_ids": fish_ids,
+                "fish_weights": fish_weights,
+                "fish": fish,
+            }
+        )
     return {"seed": seed, "total": len(records), "records": records}
 
 
 def _remaining_from_disk(seed: int) -> dict:
     rows = _read_csv_rows(ROOT_DIR / "data" / f"remaining_seed_{seed}.csv")
-    fish = [
-        {
+    fish = []
+    for r in rows:
+        reasons = [x for x in (r.get("reflow_reasons") or "").split("|") if x]
+        item = {
             "fish_id": int(r["fish_id"]),
             "weight": int(r["weight"]),
             "spec": r.get("spec") or "",
             "rounds": int(r.get("rounds") or 1),
             "status": r.get("status") or "",
-            "reflow_reasons": (r.get("reflow_reasons") or "").split("|"),
+            "reflow_reasons": reasons,
         }
-        for r in rows
-    ]
+        if r.get("tail_cause"):
+            item["tail_cause"] = r["tail_cause"]
+            item["reflow_summary"] = r.get("reflow_summary") or ""
+            item["had_timeout"] = str(r.get("had_timeout") or "0") in ("1", "True", "true")
+            item["had_overflow"] = str(r.get("had_overflow") or "0") in ("1", "True", "true")
+            dwell = r.get("dwell_time")
+            item["dwell_time"] = int(dwell) if dwell not in (None, "") else None
+        else:
+            trace = FishTrace(
+                fish_id=item["fish_id"],
+                weight=item["weight"],
+                spec=item["spec"] or None,
+                rounds=item["rounds"],
+                status=item["status"],
+                reflow_reasons=reasons,
+            )
+            item.update(describe_tail_trace(trace))
+        fish.append(item)
     return {"seed": seed, "finished": True, "total": len(fish), "fish": fish}
 
 
@@ -465,6 +517,8 @@ class Handler(BaseHTTPRequestHandler):
                     "default_enabled_specs": list(DEFAULT_ENABLED_SPECS),
                     "all_specs": list(ALL_SPECS),
                     "spec_ranges": {k: list(v["range"]) for k, v in SPECS.items()},
+                    "bucket_ranges": bucket_ranges_for_api(),
+                    "bucket_rules_source": "plan/细分规则.py (calc_bucket_split / bucket_of)",
                     "target_min": TARGET_MIN,
                     "target_max": TARGET_MAX,
                     "modules": {k: list(v) for k, v in MODULE_SPECS.items()},

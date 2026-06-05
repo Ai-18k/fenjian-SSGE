@@ -204,6 +204,43 @@
       padding: 8px 0;
       border-bottom: 1px solid var(--line);
     }
+    .data-summary {
+      font-size: 12px;
+      color: var(--muted);
+      margin-bottom: 10px;
+      line-height: 1.6;
+    }
+    .data-table-wrap {
+      max-height: 52vh;
+      overflow: auto;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+    }
+    .data-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 12px;
+    }
+    .data-table th,
+    .data-table td {
+      padding: 6px 8px;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+      vertical-align: top;
+    }
+    .data-table th {
+      position: sticky;
+      top: 0;
+      background: var(--card);
+      z-index: 1;
+      font-weight: 600;
+      color: var(--muted);
+    }
+    .data-table tr:hover td { background: #f8fafc; }
+    .tag-timeout { color: #92400e; }
+    .tag-overflow { color: #1d4ed8; }
+    .tag-tail { color: #b91c1c; }
+    .fish-detail { color: var(--muted); font-size: 11px; margin-top: 4px; line-height: 1.45; }
 
     .legend {
       display: flex;
@@ -322,7 +359,7 @@
     </div>
   </main>
 
-  <dialog id="dataDialog" class="panel" style="max-width:760px;width:92%;border:none;padding:16px">
+  <dialog id="dataDialog" class="panel" style="max-width:920px;width:94%;border:none;padding:16px">
     <h2 id="dataDialogTitle" style="margin-bottom:8px"></h2>
     <p id="dataDialogMeta" style="font-size:12px;color:var(--muted);margin-bottom:10px"></p>
     <div id="dataDialogBody" class="log" style="max-height:55vh"></div>
@@ -484,29 +521,96 @@
       return +$("seed").value || 42;
     }
 
+    function formatFishInCarton(r) {
+      const list = r.fish && r.fish.length
+        ? r.fish
+        : (r.fish_ids || []).map((id, i) => ({
+            id,
+            weight: (r.fish_weights || [])[i],
+            bucket: "",
+          }));
+      if (!list.length) return '<span class="fish-detail">（无单鱼明细，请重跑批后导出）</span>';
+      return '<div class="fish-detail">' + list.map(f => {
+        const b = f.bucket ? BUCKET_LABEL[f.bucket] || f.bucket : "";
+        const w = f.weight != null ? f.weight + "g" : "?g";
+        return `#${f.id} ${w}${b ? " " + b : ""}`;
+      }).join(" · ") + "</div>";
+    }
+
     function renderCartonRecords(records) {
       if (!records.length) {
         return '<div style="color:var(--muted);font-size:12px">暂无成盒数据（请先跑完模拟或确认 data/cartons_seed_*.csv 存在）</div>';
       }
-      const rows = records.slice(0, 800).map(r => {
+      const show = records.slice(0, 500);
+      const body = show.map(r => {
         const p = r.parts || {};
         const parts = ["small", "medium", "large"].filter(b => p[b]).map(b => BUCKET_LABEL[b] + p[b]).join("+");
-        const ids = (r.fish_ids || []).length ? ` · 鱼ID ${r.fish_ids.slice(0, 5).join(",")}${r.fish_ids.length > 5 ? "…" : ""}` : "";
-        return `<div class="carton-item"><strong>#${r.seq || "?"} ${String(r.spec).toUpperCase()}</strong> ${r.count}尾 ${r.weight}g · ${parts || "-"}${ids}</div>`;
+        return `<tr>
+          <td>${r.seq || "?"}</td>
+          <td>${String(r.spec).toUpperCase()}</td>
+          <td>${r.count}</td>
+          <td>${r.weight}</td>
+          <td>${parts || "-"}</td>
+          <td>${formatFishInCarton(r)}</td>
+        </tr>`;
       }).join("");
-      const tail = records.length > 800 ? `<div style="color:var(--muted);font-size:12px;padding:8px 0">… 仅显示前 800 条，共 ${records.length} 盒，完整数据请导出 CSV</div>` : "";
-      return rows + tail;
+      const tail = records.length > 500
+        ? `<div class="data-summary">… 仅显示前 500 盒，共 ${records.length} 盒，完整数据请导出 CSV</div>`
+        : `<div class="data-summary">共 ${records.length} 盒 · 单鱼重量见「每条鱼」列</div>`;
+      return tail + `<div class="data-table-wrap"><table class="data-table">
+        <thead><tr><th>箱号</th><th>规格</th><th>尾数</th><th>总重g</th><th>分区</th><th>每条鱼（ID·重量·小中大）</th></tr></thead>
+        <tbody>${body}</tbody></table></div>`;
+    }
+
+    function summarizeRemaining(fish) {
+      const byCause = {};
+      let timeoutN = 0, overflowN = 0, bothN = 0;
+      for (const f of fish) {
+        const c = f.tail_cause || f.status || "未知";
+        byCause[c] = (byCause[c] || 0) + 1;
+        if (f.had_timeout) timeoutN++;
+        if (f.had_overflow) overflowN++;
+        if (f.had_timeout && f.had_overflow) bothN++;
+      }
+      const lines = Object.entries(byCause).map(([k, n]) => `${k}：${n}`);
+      return `<div class="data-summary">
+        <strong>未匹配原因汇总</strong>（${fish.length} 条）<br>
+        ${lines.join(" · ") || "—"}<br>
+        过程回流：超时 ${timeoutN} · 超容 ${overflowN} · 兼有 ${bothN}
+        <br><span style="font-size:11px">「尾料原因」= 批末状态；「回流记录」= 仿真中是否曾因超时/超容被弹出料道</span>
+      </div>`;
     }
 
     function renderRemainingFish(fish) {
       if (!fish.length) {
         return '<div style="color:var(--muted);font-size:12px">暂无尾料（25000 条跑完后才会生成 remaining_seed_*.csv）</div>';
       }
-      const rows = fish.slice(0, 800).map(f =>
-        `<div class="carton-item"><strong>#${f.fish_id}</strong> ${(f.spec || "-").toUpperCase()} ${f.weight}g · ${f.status || ""} · 第${f.rounds || 1}轮</div>`
-      ).join("");
-      const tail = fish.length > 800 ? `<div style="color:var(--muted);font-size:12px;padding:8px 0">… 仅显示前 800 条，共 ${fish.length} 条，完整数据请导出 CSV</div>` : "";
-      return rows + tail;
+      const show = fish.slice(0, 800);
+      const body = show.map(f => {
+        const reflow = f.reflow_summary || (f.reflow_reasons || []).join("、") || "无";
+        const dwell = f.dwell_time != null ? f.dwell_time + "s" : "—";
+        const tClass = f.had_timeout ? "tag-timeout" : "";
+        const oClass = f.had_overflow ? "tag-overflow" : "";
+        return `<tr>
+          <td>${f.fish_id}</td>
+          <td>${f.weight}</td>
+          <td>${(f.spec || "-").toUpperCase()}</td>
+          <td class="tag-tail">${f.tail_cause || f.status || ""}</td>
+          <td><span class="${tClass}">${f.had_timeout ? "是" : ""}</span></td>
+          <td><span class="${oClass}">${f.had_overflow ? "是" : ""}</span></td>
+          <td>${reflow}</td>
+          <td>${f.rounds || 1}</td>
+          <td>${dwell}</td>
+        </tr>`;
+      }).join("");
+      const tail = fish.length > 800
+        ? `<div class="data-summary">… 仅显示前 800 条，共 ${fish.length} 条</div>`
+        : "";
+      return summarizeRemaining(fish) + tail + `<div class="data-table-wrap"><table class="data-table">
+        <thead><tr>
+          <th>鱼ID</th><th>重量g</th><th>规格</th><th>尾料原因</th>
+          <th>曾超时</th><th>曾超容</th><th>回流记录</th><th>轮次</th><th>停留s</th>
+        </tr></thead><tbody>${body}</tbody></table></div>`;
     }
 
     async function showDataDialog(title, jsonPath, csvPath, renderFn, pickRows) {

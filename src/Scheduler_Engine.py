@@ -300,6 +300,58 @@ def load_or_generate_batch(
 
 
 # ---------------------------------------------------------------------------
+# 尾料 / 成盒明细
+# ---------------------------------------------------------------------------
+TAIL_STATUS_LABEL = {
+    "unmatched_tail": "批末料道未配盒",
+    "unmatched_reflow": "回流后未配盒",
+    "unmatched_outside": "规格外",
+}
+
+
+def carton_fish_detail(plan: BoxPlan) -> list[dict]:
+    return [
+        {
+            "id": f.id,
+            "weight": f.weight,
+            "bucket": f.bucket or "",
+        }
+        for f in plan.fish
+    ]
+
+
+def describe_tail_trace(trace: FishTrace, end_tick: int | None = None) -> dict:
+    """尾料未匹配原因：批末未配盒 / 回流未再入盒 / 规格外，及是否曾超时、超容回流。"""
+    reasons = list(trace.reflow_reasons)
+    had_timeout = "timeout" in reasons
+    had_overflow = "overflow" in reasons
+    status = trace.status or ""
+    tail_cause = TAIL_STATUS_LABEL.get(status, status or "未知")
+
+    reflow_parts: list[str] = []
+    if had_timeout:
+        reflow_parts.append("超时回流")
+    if had_overflow:
+        reflow_parts.append("超容回流")
+    reflow_summary = "、".join(reflow_parts) if reflow_parts else "无"
+
+    dwell_time: int | None = None
+    if trace.first_in_time is not None:
+        if trace.outbound_time is not None:
+            dwell_time = trace.outbound_time - trace.first_in_time
+        elif end_tick is not None:
+            dwell_time = end_tick - trace.first_in_time
+
+    return {
+        "tail_cause": tail_cause,
+        "reflow_summary": reflow_summary,
+        "had_timeout": had_timeout,
+        "had_overflow": had_overflow,
+        "dwell_time": dwell_time,
+    }
+
+
+# ---------------------------------------------------------------------------
 # 追踪器
 # ---------------------------------------------------------------------------
 class FishTracker:
@@ -337,13 +389,15 @@ class FishTracker:
         trace.status = "reflow"
         trace.reflow_reasons.append(reason)
 
-    def mark_unmatched(self, fish: Fish, status: str) -> None:
+    def mark_unmatched(self, fish: Fish, status: str, tick: int | None = None) -> None:
         trace = self.traces.get(fish.id)
         if trace is None:
-            self.register(fish, 0, status=status)
+            self.register(fish, tick or 0, status=status)
             trace = self.traces[fish.id]
         trace.rounds = fish.rounds
         trace.status = status
+        if tick is not None:
+            trace.outbound_time = tick
         self.unmatched.append(trace)
 
     def save_report(self, path: Path) -> None:
@@ -379,7 +433,7 @@ class FishTracker:
                     }
                 )
 
-    def remaining_records(self) -> list[dict]:
+    def remaining_records(self, end_tick: int | None = None) -> list[dict]:
         return [
             {
                 "fish_id": t.fish_id,
@@ -388,6 +442,7 @@ class FishTracker:
                 "rounds": t.rounds,
                 "status": t.status,
                 "reflow_reasons": list(t.reflow_reasons),
+                **describe_tail_trace(t, end_tick),
             }
             for t in sorted(self.unmatched, key=lambda x: x.fish_id)
         ]
@@ -588,10 +643,14 @@ class SchedulerEngine:
                 "weight": c.weight,
                 "parts": dict(c.parts),
                 "fish_ids": [f.id for f in c.fish],
+                "fish_weights": [f.weight for f in c.fish],
+                "fish": carton_fish_detail(c),
             }
             for idx, c in enumerate(self.cartons)
         ]
-        remaining_fish = self.tracker.remaining_records() if self.finished else []
+        remaining_fish = (
+            self.tracker.remaining_records(end_tick=self.tick) if self.finished else []
+        )
         return {
             "tick": self.tick,
             "finished": self.finished,
@@ -729,6 +788,8 @@ class SchedulerEngine:
                     "medium",
                     "large",
                     "fish_ids",
+                    "fish_weights",
+                    "fish_buckets",
                 ],
             )
             writer.writeheader()
@@ -743,6 +804,8 @@ class SchedulerEngine:
                         "medium": plan.parts.get("medium", 0),
                         "large": plan.parts.get("large", 0),
                         "fish_ids": "|".join(str(f.id) for f in plan.fish),
+                        "fish_weights": "|".join(str(f.weight) for f in plan.fish),
+                        "fish_buckets": "|".join(f.bucket or "" for f in plan.fish),
                     }
                 )
 
@@ -751,13 +814,28 @@ class SchedulerEngine:
         with path.open("w", newline="", encoding="utf-8-sig") as f:
             writer = csv.DictWriter(
                 f,
-                fieldnames=["fish_id", "weight", "spec", "rounds", "status", "reflow_reasons"],
+                fieldnames=[
+                    "fish_id",
+                    "weight",
+                    "spec",
+                    "rounds",
+                    "status",
+                    "tail_cause",
+                    "reflow_summary",
+                    "had_timeout",
+                    "had_overflow",
+                    "dwell_time",
+                    "reflow_reasons",
+                ],
             )
             writer.writeheader()
-            for row in self.tracker.remaining_records():
+            for row in self.tracker.remaining_records(end_tick=self.tick):
                 writer.writerow(
                     {
                         **row,
+                        "had_timeout": int(row["had_timeout"]),
+                        "had_overflow": int(row["had_overflow"]),
+                        "dwell_time": row["dwell_time"] if row["dwell_time"] is not None else "",
                         "reflow_reasons": "|".join(row["reflow_reasons"]),
                     }
                 )
@@ -827,10 +905,10 @@ class SchedulerEngine:
         for spec in self.specs:
             for bucket in BUCKETS:
                 for fish in self.lanes.queues[spec][bucket]:
-                    self.tracker.mark_unmatched(fish, "unmatched_tail")
+                    self.tracker.mark_unmatched(fish, "unmatched_tail", tick=self.tick)
                     self.stats.tail_count += 1
         for fish in self.lanes.reflow:
-            self.tracker.mark_unmatched(fish, "unmatched_reflow")
+            self.tracker.mark_unmatched(fish, "unmatched_reflow", tick=self.tick)
             self.stats.tail_count += 1
         for fish in self.lanes.outside:
             if self.tracker.traces[fish.id].status == "unmatched_outside":
