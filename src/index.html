@@ -309,6 +309,7 @@
       <div id="statusPillEmbed" class="status-pill">待机</div>
       <button type="button" class="secondary" id="btnViewCartonsEmbed">成盒数据</button>
       <button type="button" class="secondary" id="btnViewRemainingEmbed">尾料数据</button>
+      <button type="button" class="secondary" id="btnViewTimeoutEmbed">超时回流</button>
       <a id="btnReportEmbed" href="/api/report?seed=42" style="text-decoration:none">
         <button type="button" class="secondary" disabled id="btnReportEmbedInner">下载报告</button>
       </a>
@@ -339,6 +340,7 @@
       </a>
       <button type="button" class="secondary" id="btnViewCartons">成盒数据</button>
       <button type="button" class="secondary" id="btnViewRemaining">尾料数据</button>
+      <button type="button" class="secondary" id="btnViewTimeout">超时回流</button>
     </div>
 
     <div class="stats">
@@ -408,6 +410,8 @@
 
     let pollTimer = null;
     let lastEventCount = 0;
+    let seenEventKeys = new Set();
+    let lastState = null;
 
     async function api(path, body) {
       const opt = body ? {
@@ -548,13 +552,25 @@
       line("reflow", "#d97706");
     }
 
+    function formatLogEvent(ev) {
+      let extra = "";
+      if (ev.reason === "timeout" && ev.dwell_s != null) {
+        const th = ev.threshold_s != null ? ` · 阈值${ev.threshold_s}s` : "";
+        extra = ` <span style="color:#b45309;font-weight:600">停留 ${ev.dwell_s}s${th}</span>`;
+      }
+      return `<span class="t">t=${ev.tick}</span>${ev.msg}${extra}`;
+    }
+
     function appendLogs(events) {
       if (!events || !events.length) return;
       const box = $("logBox");
-      events.slice(-15).forEach(ev => {
+      events.forEach(ev => {
+        const key = `${ev.tick}|${ev.fish_id ?? ""}|${ev.reason ?? ""}|${ev.msg}`;
+        if (seenEventKeys.has(key)) return;
+        seenEventKeys.add(key);
         const div = document.createElement("div");
         div.className = "log-item " + (ev.kind || "");
-        div.innerHTML = `<span class="t">t=${ev.tick}</span>${ev.msg}`;
+        div.innerHTML = formatLogEvent(ev);
         box.appendChild(div);
       });
       while (box.childNodes.length > 120) box.removeChild(box.firstChild);
@@ -672,8 +688,57 @@
         </tr></thead><tbody>${body}</tbody></table></div>`;
     }
 
+    function renderTimeoutReflowLog(records) {
+      if (!records.length) {
+        return '<div style="color:var(--muted);font-size:12px">暂无超时回流（模拟运行后才会产生记录）</div>';
+      }
+      const show = records.slice().reverse().slice(0, 1000);
+      const body = show.map((r, i) => {
+        const b = BUCKET_LABEL[r.bucket] || r.bucket || "-";
+        return `<tr>
+          <td>${records.length - i}</td>
+          <td>t=${r.tick}</td>
+          <td>${r.fish_id}</td>
+          <td>${r.weight ?? "-"}</td>
+          <td>${String(r.spec || "-").toUpperCase()}</td>
+          <td>${b}</td>
+          <td class="tag-timeout"><strong>${r.dwell_s}s</strong></td>
+          <td>${r.threshold_s ?? "-"}</td>
+          <td>${r.rounds ?? "-"}</td>
+        </tr>`;
+      }).join("");
+      const avg = (records.reduce((s, r) => s + (r.dwell_s || 0), 0) / records.length).toFixed(1);
+      const max = Math.max(...records.map(r => r.dwell_s || 0));
+      const summary = `<div class="data-summary">
+        共 <strong>${records.length}</strong> 次超时回流 ·
+        停留时间 平均 ${avg}s · 最大 ${max}s ·
+        「停留s」= 队头在该分区料道的累计等待时间（回流入队后重新计时）
+      </div>`;
+      const tail = records.length > 1000
+        ? `<div class="data-summary">… 仅显示最近 1000 条</div>`
+        : "";
+      return summary + tail + `<div class="data-table-wrap"><table class="data-table">
+        <thead><tr>
+          <th>#</th><th>时刻</th><th>鱼ID</th><th>重量g</th><th>规格</th><th>分区</th>
+          <th>停留s</th><th>阈值s</th><th>轮次</th>
+        </tr></thead><tbody>${body}</tbody></table></div>`;
+    }
+
+    function showTimeoutReflowDialog() {
+      const records = lastState?.timeout_reflow_log || [];
+      $("dataDialogTitle").textContent = "超时回流记录";
+      $("dataDialogMeta").textContent = records.length
+        ? `种子 ${lastState?.seed ?? currentSeed()} · 共 ${records.length} 次 · 阈值 ${lastState?.move_timeout ?? $("moveTimeout").value}s`
+        : "暂无记录（请先开始模拟）";
+      $("dataDialogBody").innerHTML = renderTimeoutReflowLog(records);
+      $("dataDialogExport").href = "#";
+      $("dataDialogExport").style.display = "none";
+      $("dataDialog").showModal();
+    }
+
     async function showDataDialog(title, jsonPath, csvPath, renderFn, pickRows) {
       const seed = currentSeed();
+      $("dataDialogExport").style.display = "";
       $("dataDialogTitle").textContent = title;
       $("dataDialogMeta").textContent = "加载中…";
       $("dataDialogBody").innerHTML = "";
@@ -693,6 +758,7 @@
     }
 
     function updateUI(state) {
+      lastState = state;
       if (state.status === "idle" && !state.running) {
         setStatus("idle");
         $("btnStart").disabled = false;
@@ -771,6 +837,10 @@
       }
     }
 
+    function wireTimeoutButtons(btn) {
+      if (btn) btn.onclick = () => showTimeoutReflowDialog();
+    }
+
     function wireDataButtons(cartonsBtn, remainingBtn) {
       if (cartonsBtn) {
         cartonsBtn.onclick = () => showDataDialog(
@@ -801,6 +871,7 @@
         }
         $("logBox").innerHTML = "";
         lastEventCount = 0;
+        seenEventKeys = new Set();
       const cfg = await api("/api/config");
       let enabledSpecs = cfg.default_enabled_specs;
       try {
@@ -830,6 +901,8 @@
 
     wireDataButtons($("btnViewCartons"), $("btnViewRemaining"));
     wireDataButtons($("btnViewCartonsEmbed"), $("btnViewRemainingEmbed"));
+    wireTimeoutButtons($("btnViewTimeout"));
+    wireTimeoutButtons($("btnViewTimeoutEmbed"));
     $("dataDialogClose").onclick = () => $("dataDialog").close();
 
     api("/api/config").then(cfg => {

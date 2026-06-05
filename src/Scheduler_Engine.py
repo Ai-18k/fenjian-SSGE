@@ -589,6 +589,7 @@ class SchedulerEngine:
         self.finished = False
         self.events: list[dict] = []
         self.history: list[dict] = []
+        self.timeout_reflow_log: list[dict] = []
 
     def _event(self, kind: str, msg: str, **extra) -> None:
         evt = {"tick": self.tick, "kind": kind, "msg": msg, **extra}
@@ -655,6 +656,7 @@ class SchedulerEngine:
             "tick": self.tick,
             "finished": self.finished,
             "seed": self.seed,
+            "move_timeout": self.move_timeout,
             "enabled_specs": list(self.specs),
             "total_fish": self.total_fish,
             "input_count": self.stats.input_count,
@@ -674,6 +676,7 @@ class SchedulerEngine:
             "remaining_fish": remaining_fish,
             "remaining_count": len(remaining_fish),
             "events": self.events[-40:],
+            "timeout_reflow_log": self.timeout_reflow_log,
             "history": self.history[-120:],
             "rounds_top": dict(sorted(rounds_dist.items(), key=lambda x: int(x[0]))[:12]),
             "target": {"min": TARGET_MIN, "max": TARGET_MAX},
@@ -744,17 +747,32 @@ class SchedulerEngine:
                     self.move_timeout > 0
                     and self.tick - lane[0].enter_time >= self.move_timeout
                 ):
+                    dwell = self.tick - lane[0].enter_time
                     fish = self.lanes.divert_head(spec, bucket, self.tick, "timeout", self.tracker)
                     if fish:
                         self.stats.reflow_count += 1
                         self.stats.timeout_reflow += 1
+                        self.timeout_reflow_log.append(
+                            {
+                                "tick": self.tick,
+                                "fish_id": fish.id,
+                                "weight": fish.weight,
+                                "spec": spec,
+                                "bucket": bucket,
+                                "dwell_s": dwell,
+                                "threshold_s": self.move_timeout,
+                                "rounds": fish.rounds,
+                            }
+                        )
                         self._log(
                             f"回流: #{fish.id} {spec.upper()}-{BUCKET_LABEL[bucket]} "
-                            f"超时({self.move_timeout}s) → 第{fish.rounds}轮",
+                            f"超时 {dwell}s(阈值{self.move_timeout}s) → 第{fish.rounds}轮",
                             kind="reflow",
                             reason="timeout",
                             fish_id=fish.id,
                             rounds=fish.rounds,
+                            dwell_s=dwell,
+                            threshold_s=self.move_timeout,
                         )
                     return
 
