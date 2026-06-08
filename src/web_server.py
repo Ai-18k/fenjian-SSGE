@@ -250,6 +250,9 @@ class SimulationRunner:
                     "error": self.error,
                 }
             snap = self.engine.get_snapshot()
+            if self.running and not self.paused and not self.engine.finished:
+                self.engine._sync_tick()
+                snap["tick"] = self.engine.tick
             snap["status"] = "finished" if self.engine.finished else ("paused" if self.paused else "running")
             snap["running"] = self.running
             snap["paused"] = self.paused
@@ -316,10 +319,14 @@ class SimulationRunner:
     def pause(self) -> None:
         with self.lock:
             self.paused = True
+            if self.engine is not None:
+                self.engine.pause_clock()
 
     def resume(self) -> None:
         with self.lock:
             self.paused = False
+            if self.engine is not None:
+                self.engine.resume_clock()
 
     def set_speed(self, speed: float) -> None:
         with self.lock:

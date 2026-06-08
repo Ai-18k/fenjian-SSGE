@@ -310,6 +310,7 @@
       <button type="button" class="secondary" id="btnViewCartonsEmbed">成盒数据</button>
       <button type="button" class="secondary" id="btnViewRemainingEmbed">尾料数据</button>
       <button type="button" class="secondary" id="btnViewTimeoutEmbed">超时回流</button>
+      <button type="button" class="secondary" id="btnViewOverflowEmbed">超容回流</button>
       <a id="btnReportEmbed" href="/api/report?seed=42" style="text-decoration:none">
         <button type="button" class="secondary" disabled id="btnReportEmbedInner">下载报告</button>
       </a>
@@ -341,14 +342,15 @@
       <button type="button" class="secondary" id="btnViewCartons">成盒数据</button>
       <button type="button" class="secondary" id="btnViewRemaining">尾料数据</button>
       <button type="button" class="secondary" id="btnViewTimeout">超时回流</button>
+      <button type="button" class="secondary" id="btnViewOverflow">超容回流</button>
     </div>
 
     <div class="stats">
-      <div class="stat"><div class="label">模拟时间</div><div class="value" id="sTick">0</div><div class="hint">秒</div></div>
+      <div class="stat"><div class="label">运行时间</div><div class="value" id="sTick">0</div><div class="hint" id="sTickHint">秒 · 真实经过时间</div></div>
       <div class="stat"><div class="label">入料进度</div><div class="value" id="sInput">0</div><div class="hint" id="sInputHint">/ 25000</div></div>
       <div class="stat"><div class="label">成功装盒</div><div class="value" id="sCartons">0</div><div class="hint">4980~5030g</div></div>
       <div class="stat"><div class="label">装箱鱼数</div><div class="value" id="sPacked">0</div></div>
-      <div class="stat"><div class="label">回流次数</div><div class="value" id="sReflow">0</div><div class="hint" id="sReflowHint">超时/超容</div></div>
+      <div class="stat"><div class="label">回流动作</div><div class="value" id="sReflow">0</div><div class="hint" id="sReflowHint">超时/超容 · 累计次数</div></div>
       <div class="stat"><div class="label">规格外</div><div class="value" id="sOutside">0</div></div>
       <div class="stat"><div class="label">未匹配尾料</div><div class="value" id="sUnmatched">0</div></div>
       <div class="stat"><div class="label">回流待入库</div><div class="value" id="sReflowQ">0</div></div>
@@ -535,7 +537,7 @@
 
       ctx.textAlign = "center";
       ctx.textBaseline = "bottom";
-      ctx.fillText("模拟时间 (s)", pad.l + (w - pad.l - pad.r) / 2, h - 2);
+      ctx.fillText("运行时间 (s)", pad.l + (w - pad.l - pad.r) / 2, h - 2);
 
       function line(key, color) {
         ctx.strokeStyle = color;
@@ -736,6 +738,54 @@
       $("dataDialog").showModal();
     }
 
+    function renderOverflowReflowLog(records) {
+      if (!records.length) {
+        return '<div style="color:var(--muted);font-size:12px">暂无超容回流（模拟运行后才会产生记录）</div>';
+      }
+      const show = records.slice().reverse().slice(0, 1000);
+      const body = show.map((r, i) => {
+        const b = BUCKET_LABEL[r.bucket] || r.bucket || "-";
+        return `<tr>
+          <td>${records.length - i}</td>
+          <td>t=${r.tick}</td>
+          <td>${r.fish_id}</td>
+          <td>${r.weight ?? "-"}</td>
+          <td>${String(r.spec || "-").toUpperCase()}</td>
+          <td>${b}</td>
+          <td class="tag-overflow"><strong>${r.lane_len}</strong></td>
+          <td>${r.cap ?? "-"}</td>
+          <td>${r.rounds ?? "-"}</td>
+        </tr>`;
+      }).join("");
+      const avg = (records.reduce((s, r) => s + (r.lane_len || 0), 0) / records.length).toFixed(1);
+      const max = Math.max(...records.map(r => r.lane_len || 0));
+      const summary = `<div class="data-summary">
+        共 <strong>${records.length}</strong> 次超容回流 ·
+        料道长度 平均 ${avg} · 最大 ${max} ·
+        「料道数」= 弹出时该分区队列长度；「容量」= 允许上限（超出则弹出队头）
+      </div>`;
+      const tail = records.length > 1000
+        ? `<div class="data-summary">… 仅显示最近 1000 条</div>`
+        : "";
+      return summary + tail + `<div class="data-table-wrap"><table class="data-table">
+        <thead><tr>
+          <th>#</th><th>时刻</th><th>鱼ID</th><th>重量g</th><th>规格</th><th>分区</th>
+          <th>料道数</th><th>容量</th><th>轮次</th>
+        </tr></thead><tbody>${body}</tbody></table></div>`;
+    }
+
+    function showOverflowReflowDialog() {
+      const records = lastState?.overflow_reflow_log || [];
+      $("dataDialogTitle").textContent = "超容回流记录";
+      $("dataDialogMeta").textContent = records.length
+        ? `种子 ${lastState?.seed ?? currentSeed()} · 共 ${records.length} 次`
+        : "暂无记录（请先开始模拟）";
+      $("dataDialogBody").innerHTML = renderOverflowReflowLog(records);
+      $("dataDialogExport").href = "#";
+      $("dataDialogExport").style.display = "none";
+      $("dataDialog").showModal();
+    }
+
     async function showDataDialog(title, jsonPath, csvPath, renderFn, pickRows) {
       const seed = currentSeed();
       $("dataDialogExport").style.display = "";
@@ -785,14 +835,17 @@
       }
       if (state.seed != null) $("seed").value = state.seed;
       if (state.total_fish != null) $("total").value = state.total_fish;
+      if (state.move_timeout != null) $("moveTimeout").value = state.move_timeout;
       setStatus(state.status);
       $("sTick").textContent = state.tick ?? 0;
       $("sInput").textContent = state.input_count ?? 0;
       $("sInputHint").textContent = "/ " + (state.total_fish ?? 0);
       $("sCartons").textContent = state.cartons ?? 0;
       $("sPacked").textContent = state.packed_fish ?? 0;
+      const mt = state.move_timeout ?? ($("moveTimeout").value || 30);
+      $("sTickHint").textContent = `秒 · 真实经过时间 · 超时阈值${mt}s`;
       $("sReflow").textContent = state.reflow_count ?? 0;
-      $("sReflowHint").textContent = `超时 ${state.timeout_reflow ?? 0} / 超容 ${state.overflow_reflow ?? 0}`;
+      $("sReflowHint").textContent = `超时 ${state.timeout_reflow ?? 0} / 超容 ${state.overflow_reflow ?? 0} · 阈值${mt}s`;
       $("sOutside").textContent = state.outside_count ?? 0;
       $("sUnmatched").textContent = state.unmatched_count ?? 0;
       $("sReflowQ").textContent = state.reflow_queue ?? 0;
@@ -839,6 +892,10 @@
 
     function wireTimeoutButtons(btn) {
       if (btn) btn.onclick = () => showTimeoutReflowDialog();
+    }
+
+    function wireOverflowButtons(btn) {
+      if (btn) btn.onclick = () => showOverflowReflowDialog();
     }
 
     function wireDataButtons(cartonsBtn, remainingBtn) {
@@ -903,6 +960,8 @@
     wireDataButtons($("btnViewCartonsEmbed"), $("btnViewRemainingEmbed"));
     wireTimeoutButtons($("btnViewTimeout"));
     wireTimeoutButtons($("btnViewTimeoutEmbed"));
+    wireOverflowButtons($("btnViewOverflow"));
+    wireOverflowButtons($("btnViewOverflowEmbed"));
     $("dataDialogClose").onclick = () => $("dataDialog").close();
 
     api("/api/config").then(cfg => {

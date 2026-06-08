@@ -488,6 +488,12 @@ class SortingLanes:
     def total_in_spec(self, spec: str) -> int:
         return sum(len(self.queues[spec][b]) for b in BUCKETS)
 
+    @staticmethod
+    def _sync_head_enter_time(lane: list[Fish], tick: int) -> None:
+        """队头变更后重置队头计时，超时只统计「担任队头」的等待时间。"""
+        if lane:
+            lane[0].enter_time = tick
+
     def remove_plan(self, plan: BoxPlan, tick: int, tracker: FishTracker) -> list[Fish]:
         removed: list[Fish] = []
         for bucket in BUCKETS:
@@ -496,6 +502,7 @@ class SortingLanes:
                 chunk = self.queues[plan.spec][bucket][:n]
                 del self.queues[plan.spec][bucket][:n]
                 removed.extend(chunk)
+                self._sync_head_enter_time(self.queues[plan.spec][bucket], tick)
         for fish in removed:
             tracker.mark_packed(fish, tick)
         plan.fish = removed
@@ -506,6 +513,7 @@ class SortingLanes:
         if not lane:
             return None
         fish = lane.pop(0)
+        self._sync_head_enter_time(lane, tick)
         fish.rounds += 1
         fish.enter_time = tick
         self.reflow.append(fish)
@@ -597,11 +605,31 @@ class SchedulerEngine:
         self.tracker = FishTracker()
         self.stats = Stats()
         self.cartons: list[BoxPlan] = []
+        self._time_origin = time.monotonic()
+        self._paused_at: float | None = None
         self.tick = 0
         self.finished = False
         self.events: list[dict] = []
         self.history: list[dict] = []
         self.timeout_reflow_log: list[dict] = []
+        self.overflow_reflow_log: list[dict] = []
+
+    def _sync_tick(self) -> int:
+        """用自引擎创建以来的真实经过时间（秒）更新 tick，与入料条数解耦；暂停期间不计入。"""
+        now = time.monotonic()
+        if self._paused_at is not None:
+            now = self._paused_at
+        self.tick = int(max(0, now - self._time_origin))
+        return self.tick
+
+    def pause_clock(self) -> None:
+        if self._paused_at is None:
+            self._paused_at = time.monotonic()
+
+    def resume_clock(self) -> None:
+        if self._paused_at is not None:
+            self._time_origin += time.monotonic() - self._paused_at
+            self._paused_at = None
 
     def _event(self, kind: str, msg: str, **extra) -> None:
         evt = {"tick": self.tick, "kind": kind, "msg": msg, **extra}
@@ -807,6 +835,7 @@ class SchedulerEngine:
             "remaining_count": len(remaining_fish),
             "events": self.events[-40:],
             "timeout_reflow_log": self.timeout_reflow_log,
+            "overflow_reflow_log": self.overflow_reflow_log,
             "demands": demands,
             "active_demands": active_demands,
             "active_demand_count": len(active_demands),
@@ -864,10 +893,23 @@ class SchedulerEngine:
                 if not lane:
                     continue
                 if len(lane) > cap:
+                    lane_len = len(lane)
                     fish = self.lanes.divert_head(spec, bucket, self.tick, "overflow", self.tracker)
                     if fish:
                         self.stats.reflow_count += 1
                         self.stats.overflow_reflow += 1
+                        self.overflow_reflow_log.append(
+                            {
+                                "tick": self.tick,
+                                "fish_id": fish.id,
+                                "weight": fish.weight,
+                                "spec": spec,
+                                "bucket": bucket,
+                                "lane_len": lane_len,
+                                "cap": cap,
+                                "rounds": fish.rounds,
+                            }
+                        )
                         self._log(
                             f"回流: #{fish.id} {spec.upper()}-{BUCKET_LABEL[bucket]} "
                             f"超容 → 第{fish.rounds}轮",
@@ -993,14 +1035,20 @@ class SchedulerEngine:
                 )
 
     def process_one(self) -> bool:
+        """推进仿真一个时间步：处理批次中下一条鱼，并驱动封箱与防堵回流。
+
+        单步流程：入料 → 回流队列再入料道 → 尝试封箱 → 防堵（超容/超时弹出队头）。
+        批次游标 _cursor 耗尽时返回 False，否则返回 True。
+        """
         if self._cursor >= self.total_fish:
             return False
 
-        self.tick += 1
+        self._sync_tick()
         record = self.batch[self._cursor]
         self._cursor += 1
         self.stats.input_count += 1
 
+        # 按重量映射规格/分区；规格外或禁用规格 → outside 队列，否则入对应料道
         fish = record_to_fish(record, self.tick, enabled=set(self.specs))
         if record.outside or fish.spec is None:
             self.stats.outside_count += 1
@@ -1030,6 +1078,7 @@ class SchedulerEngine:
                     f"→ {BUCKET_LABEL[bucket]}区 第{fish.rounds}轮"
                 )
 
+        # 回流待入库 → 料道；满足 5kg 方案则封箱；仍堵则超容或超时弹出队头
         self._process_reflow_intake()
         self._try_pack_all()
         self._anti_block()
@@ -1046,13 +1095,13 @@ class SchedulerEngine:
 
     def finish_batch(self) -> None:
         for _ in range(5000):
+            self._sync_tick()
             before = self.stats.cartons
             self._process_reflow_intake()
             self._try_pack_all()
             if self.stats.cartons == before and not self.lanes.reflow:
                 break
             self._anti_block()
-            self.tick += 1
 
         for spec in self.specs:
             for bucket in BUCKETS:
@@ -1103,7 +1152,7 @@ class SchedulerEngine:
         print(f"    超容回流   : {self.stats.overflow_reflow}")
         print(f"  未匹配/尾料  : {self.stats.unmatched_count}")
         print(f"    批末尾料   : {self.stats.tail_count}")
-        print(f"  模拟时长     : {self.tick}s")
+        print(f"  运行时长     : {self.tick}s (真实经过时间)")
         if self.cartons:
             weights = [c.weight for c in self.cartons]
             print(f"  盒重范围     : {min(weights)}g ~ {max(weights)}g")
@@ -1111,6 +1160,8 @@ class SchedulerEngine:
         print("  轮数分布     :", dict(sorted(rounds_dist.items())))
         print(f"  明细报告     : {report_path}")
         print("=" * 60)
+
+
 
     def run(self, realtime: bool = True) -> None:
         print("智能分拣引擎启动")
