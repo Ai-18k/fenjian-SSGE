@@ -414,6 +414,84 @@
     let lastEventCount = 0;
     let seenEventKeys = new Set();
     let lastState = null;
+    let pollCursor = { since_carton: 0, since_timeout_reflow: 0, since_overflow_reflow: 0 };
+    let pollSessionSeed = null;
+
+    function resetPollCursor() {
+      pollCursor = { since_carton: 0, since_timeout_reflow: 0, since_overflow_reflow: 0 };
+      pollSessionSeed = null;
+      lastState = null;
+      lastEventCount = 0;
+      seenEventKeys = new Set();
+    }
+
+    function statePollUrl() {
+      const q = new URLSearchParams({
+        since_carton: String(pollCursor.since_carton),
+        since_timeout_reflow: String(pollCursor.since_timeout_reflow),
+        since_overflow_reflow: String(pollCursor.since_overflow_reflow),
+      });
+      return "/api/state?" + q.toString();
+    }
+
+    function mergePollState(delta) {
+      if (!delta) return null;
+      const idle = delta.status === "idle" && !delta.running;
+      if (idle) {
+        resetPollCursor();
+        return delta;
+      }
+      const seedChanged = delta.seed != null && pollSessionSeed != null && delta.seed !== pollSessionSeed;
+      const fullReset = !delta.snapshot_delta || !lastState || seedChanged;
+      if (fullReset) {
+        pollSessionSeed = delta.seed ?? pollSessionSeed;
+        lastState = {
+          ...delta,
+          carton_records: delta.carton_records || [],
+          timeout_reflow_log: delta.timeout_reflow_log || [],
+          overflow_reflow_log: delta.overflow_reflow_log || [],
+        };
+      } else {
+        lastState = {
+          ...delta,
+          carton_records: (lastState.carton_records || []).concat(delta.carton_records || []),
+          timeout_reflow_log: (lastState.timeout_reflow_log || []).concat(delta.timeout_reflow_log || []),
+          overflow_reflow_log: (lastState.overflow_reflow_log || []).concat(delta.overflow_reflow_log || []),
+        };
+      }
+      pollCursor.since_carton = delta.carton_total ?? lastState.cartons ?? 0;
+      pollCursor.since_timeout_reflow = delta.timeout_reflow_total ?? pollCursor.since_timeout_reflow;
+      pollCursor.since_overflow_reflow = delta.overflow_reflow_total ?? pollCursor.since_overflow_reflow;
+      if (delta.seed != null) pollSessionSeed = delta.seed;
+      return lastState;
+    }
+
+    function pollIntervalMs(state) {
+      if (!state || (state.status === "idle" && !state.running)) return 2000;
+      if (state.finished) return 400;
+      return 800;
+    }
+
+    function schedulePoll(state) {
+      if (pollTimer) clearTimeout(pollTimer);
+      pollTimer = setTimeout(pollLoop, pollIntervalMs(state));
+    }
+
+    async function pollLoop() {
+      try {
+        const delta = await api(statePollUrl());
+        const state = mergePollState(delta);
+        if (state) {
+          updateUI(state);
+          schedulePoll(state);
+        } else {
+          schedulePoll(null);
+        }
+      } catch (e) {
+        console.error(e);
+        schedulePoll(lastState);
+      }
+    }
 
     async function api(path, body) {
       const opt = body ? {
@@ -808,7 +886,6 @@
     }
 
     function updateUI(state) {
-      lastState = state;
       if (state.status === "idle" && !state.running) {
         setStatus("idle");
         $("btnStart").disabled = false;
@@ -881,15 +958,6 @@
       }
     }
 
-    async function poll() {
-      try {
-        const state = await api("/api/state");
-        updateUI(state);
-      } catch (e) {
-        console.error(e);
-      }
-    }
-
     function wireTimeoutButtons(btn) {
       if (btn) btn.onclick = () => showTimeoutReflowDialog();
     }
@@ -927,8 +995,7 @@
           return;
         }
         $("logBox").innerHTML = "";
-        lastEventCount = 0;
-        seenEventKeys = new Set();
+        resetPollCursor();
       const cfg = await api("/api/config");
       let enabledSpecs = cfg.default_enabled_specs;
       try {
@@ -969,9 +1036,8 @@
       $("total").value = cfg.default_total;
       $("moveTimeout").value = cfg.default_move_timeout;
     });
-    if (pollTimer) clearInterval(pollTimer);
-    pollTimer = setInterval(poll, 200);
-    poll();
+    if (pollTimer) clearTimeout(pollTimer);
+    pollLoop();
   </script>
 </body>
 </html>

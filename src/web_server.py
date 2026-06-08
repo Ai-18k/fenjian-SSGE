@@ -240,7 +240,12 @@ class SimulationRunner:
         self.speed = 10.0  # 条/秒（与 fifo_monitor 速度输入一致）
         self.error: str | None = None
 
-    def get_state(self) -> dict:
+    def get_state(
+        self,
+        since_carton: int = 0,
+        since_timeout_reflow: int = 0,
+        since_overflow_reflow: int = 0,
+    ) -> dict:
         with self.lock:
             if self.engine is None:
                 return {
@@ -249,7 +254,11 @@ class SimulationRunner:
                     "paused": False,
                     "error": self.error,
                 }
-            snap = self.engine.get_snapshot()
+            snap = self.engine.get_snapshot(
+                since_carton=since_carton,
+                since_timeout_reflow=since_timeout_reflow,
+                since_overflow_reflow=since_overflow_reflow,
+            )
             if self.running and not self.paused and not self.engine.finished:
                 self.engine._sync_tick()
                 snap["tick"] = self.engine.tick
@@ -533,7 +542,16 @@ class Handler(BaseHTTPRequestHandler):
             )
 
         if path == "/api/state":
-            return self._json(RUNNER.get_state())
+            since_carton = max(0, int(qs.get("since_carton", ["0"])[0]))
+            since_timeout = max(0, int(qs.get("since_timeout_reflow", ["0"])[0]))
+            since_overflow = max(0, int(qs.get("since_overflow_reflow", ["0"])[0]))
+            return self._json(
+                RUNNER.get_state(
+                    since_carton=since_carton,
+                    since_timeout_reflow=since_timeout,
+                    since_overflow_reflow=since_overflow,
+                )
+            )
 
         if path == "/api/cartons":
             seed = int(qs.get("seed", [DEFAULT_SEED])[0])

@@ -195,6 +195,7 @@ let batchFish=[],batchIndex=0,batchLoaded=false;
 let stats={input:0,cartons:0,directRoute:0,outsideTail:0,fifoReflow:0,batchTail:0,overflow:0,timeout:0};
 let currentInletDemand=null;
 let syncPollTimer=null,serverFinishedHandled=false,serverSessionKey='';
+let syncPollState=null;
 let serverInputCount=0,intakeSynced=false;
 let serverDemands=null,serverInletDemand=null,serverDemandTick=0;
 /** 与 GET /api/state 对齐的回流/尾料分项；null 表示无后端会话，回退本地动画计数 */
@@ -399,17 +400,34 @@ async function applyServerState(state,allowSkip){
   if(!state.finished)serverFinishedHandled=false;
 }
 
+function pollIntervalMs(state){
+  if(!state||(state.status==='idle'&&!state.running))return 2000;
+  if(state.finished)return 400;
+  return 800;
+}
+
+function scheduleSyncPoll(state){
+  syncPollState=state||syncPollState;
+  if(syncPollTimer)clearTimeout(syncPollTimer);
+  syncPollTimer=setTimeout(async function tick(){
+    try{await pollServerState()}catch(e){console.error(e)}
+    scheduleSyncPoll(syncPollState);
+  },pollIntervalMs(syncPollState));
+}
+
 async function pollServerState(){
   try{
     const state=await apiJson('/api/state');
+    syncPollState=state;
     await applyServerState(state,false);
     updateUI();
   }catch(e){console.error(e)}
 }
 
 function startSyncPoll(){
-  if(syncPollTimer)clearInterval(syncPollTimer);
-  syncPollTimer=setInterval(pollServerState,200);
+  if(syncPollTimer)clearTimeout(syncPollTimer);
+  syncPollState=null;
+  scheduleSyncPoll(null);
   pollServerState();
 }
 

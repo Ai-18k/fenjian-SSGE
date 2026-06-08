@@ -777,7 +777,13 @@ class SchedulerEngine:
         items.sort(key=lambda d: (d["priority"], d["address"]))
         return items
 
-    def get_snapshot(self) -> dict:
+    def get_snapshot(
+        self,
+        *,
+        since_carton: int = 0,
+        since_timeout_reflow: int = 0,
+        since_overflow_reflow: int = 0,
+    ) -> dict:
         modules: dict[str, dict] = {}
         for mod, spec_list in MODULE_SPECS.items():
             modules[mod] = {}
@@ -816,9 +822,13 @@ class SchedulerEngine:
             }
             for c in self.cartons[-8:]
         ]
+        since_carton = max(0, min(since_carton, len(self.cartons)))
+        since_timeout_reflow = max(0, min(since_timeout_reflow, len(self.timeout_reflow_log)))
+        since_overflow_reflow = max(0, min(since_overflow_reflow, len(self.overflow_reflow_log)))
+        carton_slice = self.cartons[since_carton:]
         carton_records = [
             {
-                "seq": idx + 1,
+                "seq": since_carton + idx + 1,
                 "spec": c.spec,
                 "count": c.count,
                 "weight": c.weight,
@@ -827,8 +837,10 @@ class SchedulerEngine:
                 "fish_weights": [f.weight for f in c.fish],
                 "fish": carton_fish_detail(c),
             }
-            for idx, c in enumerate(self.cartons)
+            for idx, c in enumerate(carton_slice)
         ]
+        timeout_reflow_slice = self.timeout_reflow_log[since_timeout_reflow:]
+        overflow_reflow_slice = self.overflow_reflow_log[since_overflow_reflow:]
         remaining_fish = (
             self.tracker.remaining_records(end_tick=self.tick) if self.finished else []
         )
@@ -859,11 +871,17 @@ class SchedulerEngine:
             "modules": modules,
             "recent_cartons": recent_cartons,
             "carton_records": carton_records,
+            "carton_total": len(self.cartons),
             "remaining_fish": remaining_fish,
             "remaining_count": len(remaining_fish),
             "events": self.events[-40:],
-            "timeout_reflow_log": self.timeout_reflow_log,
-            "overflow_reflow_log": self.overflow_reflow_log,
+            "timeout_reflow_log": timeout_reflow_slice,
+            "timeout_reflow_total": len(self.timeout_reflow_log),
+            "overflow_reflow_log": overflow_reflow_slice,
+            "overflow_reflow_total": len(self.overflow_reflow_log),
+            "snapshot_delta": (
+                since_carton > 0 or since_timeout_reflow > 0 or since_overflow_reflow > 0
+            ),
             "demands": demands,
             "active_demands": active_demands,
             "active_demand_count": len(active_demands),
