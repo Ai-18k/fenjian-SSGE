@@ -5,7 +5,7 @@
 @File : Scheduler_Engine.py
 @Author : 18k
 @Date : 2026/6/1 13:35
-@Description: 智能分拣引擎 — 使用随机种子批次，FIFO 分区段装盒，超时回流
+@Description: 智能分拣引擎 — 使用随机种子批次，DFS 自由组合装盒，超时回流
 """
 
 from __future__ import annotations
@@ -80,6 +80,8 @@ def _load_module(name: str, path: Path):
 _root = Path(__file__).resolve().parent.parent
 _bucket_rules = _load_module("bucket_rules", _root / "plan" / "细分规则.py")
 _seed_gen = _load_module("fish_seed_gen", _root / "plan" / "随机种子生成.py")
+_depth_search = _load_module("depth_search", _root / "plan" / "深度搜索.py")
+dfs_find_best_from_items = _depth_search.dfs_find_best_from_items
 
 BUCKET_RANGES = {}
 for spec in ALL_SPECS:
@@ -140,6 +142,7 @@ class BoxPlan:
     weight: int
     parts: dict[str, int]
     fish: list[Fish] = field(default_factory=list)
+    pick_ids: frozenset[int] | None = None  # DFS 自由组合：按鱼 ID 从料道移除
 
 
 @dataclass
@@ -496,13 +499,24 @@ class SortingLanes:
 
     def remove_plan(self, plan: BoxPlan, tick: int, tracker: FishTracker) -> list[Fish]:
         removed: list[Fish] = []
-        for bucket in BUCKETS:
-            n = plan.parts[bucket]
-            if n:
-                chunk = self.queues[plan.spec][bucket][:n]
-                del self.queues[plan.spec][bucket][:n]
-                removed.extend(chunk)
+        if plan.pick_ids:
+            targets = set(plan.pick_ids)
+            for bucket in BUCKETS:
+                lane = self.queues[plan.spec][bucket]
+                picked = [f for f in lane if f.id in targets]
+                if not picked:
+                    continue
+                self.queues[plan.spec][bucket] = [f for f in lane if f.id not in targets]
+                removed.extend(picked)
                 self._sync_head_enter_time(self.queues[plan.spec][bucket], tick)
+        else:
+            for bucket in BUCKETS:
+                n = plan.parts[bucket]
+                if n:
+                    chunk = self.queues[plan.spec][bucket][:n]
+                    del self.queues[plan.spec][bucket][:n]
+                    removed.extend(chunk)
+                    self._sync_head_enter_time(self.queues[plan.spec][bucket], tick)
         for fish in removed:
             tracker.mark_packed(fish, tick)
         plan.fish = removed
@@ -527,38 +541,52 @@ class SortingLanes:
 
 
 class BoxPlanner:
+    """在规格料道快照上用 DFS 自由组合搜索封箱方案（plan/深度搜索.py）。
+
+    尾数约束来自 SPECS[spec]["counts"]，按规格不同而不同，例如：
+      · 15p → (7, 8)
+      · 20p → (10, 11)
+      · 25p → (12, 13, 14)
+    盒重目标统一为 4980–5030 g。
+    """
+
+    @staticmethod
+    def _spec_fish_buffer(lanes: SortingLanes, spec: str) -> list[Fish]:
+        buf: list[Fish] = []
+        for bucket in BUCKETS:
+            buf.extend(lanes.queues[spec][bucket])
+        return buf
+
     def find_plan(self, lanes: SortingLanes, spec: str) -> BoxPlan | None:
-        q = lanes.queues[spec]
+        """在该规格料道快照中搜索最优成盒方案。
+
+        前置：三区鱼总数 ≥ min(SPECS[spec]["counts"])。
+        搜索：对 SPECS[spec]["counts"] 中每个合法尾数做 DFS 子集枚举（非 FIFO 队头顺序），
+              总重须落在 [TARGET_MIN, TARGET_MAX]，取得分 |总重−5005| 最小者。
+        返回：BoxPlan（含 pick_ids，remove_plan 按鱼 ID 从料道移除）。
+        """
+        if spec not in SPECS:
+            return None
         if lanes.total_in_spec(spec) < min(SPECS[spec]["counts"]):
             return None
 
-        p_small = prefix_weights(q["small"])
-        p_medium = prefix_weights(q["medium"])
-        p_large = prefix_weights(q["large"])
-        best: BoxPlan | None = None
-        best_score = float("inf")
+        buffer = self._spec_fish_buffer(lanes, spec)
+        result = dfs_find_best_from_items(buffer, spec)
+        if not result:
+            return None
 
-        for count in SPECS[spec]["counts"]:
-            for a in range(min(len(q["small"]), count) + 1):
-                for b in range(min(len(q["medium"]), count - a) + 1):
-                    c = count - a - b
-                    if c > len(q["large"]):
-                        continue
-                    weight = p_small[a] + p_medium[b] + p_large[c]
-                    if not (TARGET_MIN <= weight <= TARGET_MAX):
-                        continue
-                    score = abs(weight - TARGET_MID)
-                    if a == 0 or b == 0 or c == 0:
-                        score += 1.2
-                    if score < best_score:
-                        best = BoxPlan(
-                            spec=spec,
-                            count=count,
-                            weight=weight,
-                            parts={"small": a, "medium": b, "large": c},
-                        )
-                        best_score = score
-        return best
+        indices, count, weight = result
+        picked = [buffer[i] for i in indices]
+        parts = {b: 0 for b in BUCKETS}
+        for fish in picked:
+            parts[fish.bucket] += 1
+        return BoxPlan(
+            spec=spec,
+            count=count,
+            weight=weight,
+            parts=parts,
+            pick_ids=frozenset(f.id for f in picked),
+        )
 
 
 UI_BUCKET = {"small": "light", "medium": "mid", "large": "heavy"}

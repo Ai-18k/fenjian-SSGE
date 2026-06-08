@@ -4,7 +4,10 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="236c8e9a-740a-4589-b391-a79aed86e843" name="Changes" comment=" index.html 增加超容回流数据" />
+    <list default="true" id="236c8e9a-740a-4589-b391-a79aed86e843" name="Changes" comment=" index.html 增加超容回流数据">
+      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/fifo_monitor.html" beforeDir="false" afterPath="$PROJECT_DIR$/src/fifo_monitor.html" afterDir="false" />
+    </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
     <option name="HIGHLIGHT_NON_ACTIVE_CHANGELIST" value="false" />
@@ -54,7 +57,7 @@
     "Python.随机种子生成.executor": "Run",
     "RunOnceActivity.ShowReadmeOnStart": "true",
     "git-widget-placeholder": "main",
-    "last_opened_file_path": "E:/project/pythonproject/kaomam_project",
+    "last_opened_file_path": "E:/project/pythonproject/spider/aiqicha",
     "node.js.detected.package.eslint": "true",
     "node.js.detected.package.tslint": "true",
     "node.js.selected.package.eslint": "(autodetect)",
@@ -217,6 +220,8 @@
       <workItem from="1780534098703" duration="5767000" />
       <workItem from="1780558240197" duration="20000" />
       <workItem from="1780888383857" duration="128000" />
+      <workItem from="1780891075388" duration="1254000" />
+      <workItem from="1780899357577" duration="334000" />
     </task>
     <task id="LOCAL-00001" summary="初始状态">
       <option name="closed" value="true" />

@@ -19,6 +19,7 @@
     .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:8px}
     .stat{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:10px 12px}
     .stat .n{font-size:11px;color:var(--muted)}.stat .v{font-size:22px;font-weight:800;margin-top:2px}
+    .stat .hint{font-size:10px;color:var(--muted);margin-top:2px;line-height:1.25}
     .grid{display:grid;grid-template-columns:1fr 380px;gap:12px}
     @media(max-width:1200px){.grid{grid-template-columns:1fr}}
     .panel{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:12px;overflow:hidden}
@@ -115,7 +116,7 @@
     <div class="stat"><div class="n">完成箱数</div><div class="v" id="sCartons">0</div></div>
     <div class="stat"><div class="n">定向推送</div><div class="v" id="sDirect">0</div></div>
     <div class="stat"><div class="n">在制品</div><div class="v" id="sWip">0</div></div>
-    <div class="stat"><div class="n">回流/尾料</div><div class="v" id="sReflow">0</div></div>
+    <div class="stat"><div class="n">回流/尾料</div><div class="v" id="sReflow">0</div><div class="hint" id="sReflowHint">等待开始</div></div>
     <div class="stat"><div class="n">活跃需求</div><div class="v" id="sDemand">0</div></div>
   </section>
   <div class="bar"><div id="progressBar"></div></div>
@@ -196,6 +197,8 @@ let currentInletDemand=null;
 let syncPollTimer=null,serverFinishedHandled=false,serverSessionKey='';
 let serverInputCount=0,intakeSynced=false;
 let serverDemands=null,serverInletDemand=null,serverDemandTick=0;
+/** 与 GET /api/state 对齐的回流/尾料分项；null 表示无后端会话，回退本地动画计数 */
+let serverReflowStats=null;
 let activeView='fifo',statsFrameLoaded=false;
 let enabledSpecs=new Set(['15p','20p','25p','30p','35p','40p']);
 function isSpecEnabled(spec){return enabledSpecs.has(spec)}
@@ -308,6 +311,45 @@ function syncIntakePosition(target,allowSkip){
   }
 }
 
+function syncServerReflowStats(state){
+  if(!state||(state.status==='idle'&&!state.running&&!state.finished)){
+    serverReflowStats=null;
+    return;
+  }
+  serverReflowStats={
+    reflow_count:state.reflow_count??0,
+    outside_count:state.outside_count??0,
+    reflow_queue:state.reflow_queue??0,
+    unmatched_count:state.unmatched_count??0,
+    timeout_reflow:state.timeout_reflow??0,
+    overflow_reflow:state.overflow_reflow??0,
+    finished:!!state.finished,
+  };
+}
+
+/** 与 index.html / Scheduler_Engine 口径一致；无后端会话时用本地动画三项之和 */
+function getReflowTailDisplay(){
+  if(serverReflowStats){
+    const s=serverReflowStats;
+    if(s.finished)return s.reflow_count+s.unmatched_count;
+    return s.reflow_count+s.outside_count+s.reflow_queue;
+  }
+  return stats.outsideTail+stats.fifoReflow+stats.batchTail;
+}
+
+function getReflowTailHint(){
+  if(serverReflowStats){
+    const s=serverReflowStats;
+    if(s.finished){
+      return '回流 '+s.reflow_count+' · 尾料 '+s.unmatched_count
+        +' · 超时 '+s.timeout_reflow+' / 超容 '+s.overflow_reflow+' · 后端';
+    }
+    return '回流 '+s.reflow_count+' · 规格外 '+s.outside_count
+      +' · 待入库 '+s.reflow_queue+' · 后端';
+  }
+  return '本地动画估算';
+}
+
 async function applyServerState(state,allowSkip){
   if(!state||(state.status==='idle'&&!state.running)||(!state.running&&!state.finished&&!state.paused)){
     running=false;
@@ -315,9 +357,11 @@ async function applyServerState(state,allowSkip){
       if(!state||state.status==='idle'){
         finished=false;serverFinishedHandled=false;intakeSynced=false;
         serverDemands=null;serverInletDemand=null;serverDemandTick=0;
+        serverReflowStats=null;
       }
     }
     if(state&&state.input_count!=null)syncIntakePosition(state.input_count,false);
+    syncServerReflowStats(state);
     return;
   }
   const seed=state.seed!=null?state.seed:Number($('seedInput').value||42);
@@ -341,6 +385,7 @@ async function applyServerState(state,allowSkip){
     serverDemandTick=state.tick||0;
   }
   if(state.cartons!=null)stats.cartons=state.cartons;
+  syncServerReflowStats(state);
   syncIntakePosition(state.input_count||0,!!allowSkip);
   if(state.enabled_specs&&state.enabled_specs.length&&!running&&!finished)setEnabledSpecs(state.enabled_specs);
   if(state.finished&&!serverFinishedHandled){
@@ -812,7 +857,8 @@ function updateUI(){
   $('sCartons').textContent=stats.cartons;
   $('sDirect').textContent=stats.directRoute;
   $('sWip').textContent=queued+movingFish.length;
-  $('sReflow').textContent=stats.outsideTail+stats.fifoReflow+stats.batchTail;
+  $('sReflow').textContent=getReflowTailDisplay();
+  $('sReflowHint').textContent=getReflowTailHint();
   const demands=getDemandsForUI();
   const activeList=demands.filter(d=>d.active);
   const activeN=activeList.length;
@@ -841,7 +887,7 @@ function frame(ts){if(!lastTs)lastTs=ts;const dt=Math.min(.05,(ts-lastTs)/1000);
 async function resetLocal(){
   running=false;finished=false;lastTs=0;beltPhase=0;spawnTimer=0;simTime=0;cartonSeq=0;
   serverFinishedHandled=false;serverSessionKey='';serverInputCount=0;intakeSynced=false;
-  serverDemands=null;serverInletDemand=null;serverDemandTick=0;
+  serverDemands=null;serverInletDemand=null;serverDemandTick=0;serverReflowStats=null;
   movingFish=[];stats={input:0,cartons:0,directRoute:0,outsideTail:0,fifoReflow:0,batchTail:0,overflow:0,timeout:0};
   batchIndex=0;
   buildLayout();await loadBatch();updateUI();draw();
@@ -877,6 +923,8 @@ async function fastRun(){
     stats.input=serverInputCount;
     batchIndex=serverInputCount;
     intakeSynced=true;
+    if(state.cartons!=null)stats.cartons=state.cartons;
+    syncServerReflowStats(state);
     if(state.finished&&!serverFinishedHandled){
       serverFinishedHandled=true;
       log('批末完成（与统计面板同步）：入料 '+serverInputCount+'/'+getTotalFish());
@@ -960,7 +1008,7 @@ function drawBox(m){
 function drawTail(){
   roundRect(1480,1388,215,100,16,'#fff7ed','#fdba74',1.5);
   ctx.fillStyle='#9a3412';ctx.font='bold 14px Arial';ctx.fillText('规格外尾料箱',1498,1418);
-  ctx.fillText(String(stats.outsideTail),1580,1418);
+  ctx.fillText(String(serverReflowStats?serverReflowStats.outside_count:stats.outsideTail),1580,1418);
 }
 function drawFish(){
   if($('drawMode').value==='light'&&serverInputCount>8000)return;
