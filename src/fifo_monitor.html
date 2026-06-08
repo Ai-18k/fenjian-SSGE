@@ -121,7 +121,7 @@
   </section>
   <div class="bar"><div id="progressBar"></div></div>
   <section class="grid">
-    <div class="panel scene-wrap"><canvas id="scene" width="1740" height="1580"></canvas></div>
+    <div class="panel scene-wrap"><canvas id="scene" width="1740" height="1480"></canvas></div>
     <div>
       <div class="panel" style="margin-bottom:12px">
         <h2>进料口 · 当前需求广播</h2>
@@ -188,7 +188,7 @@ const BUCKET_COLOR={light:'#7dd3fc',mid:'#86efac',heavy:'#fbbf24'};
 const BUCKETS=['light','mid','heavy'];
 /** 由 /api/config.bucket_ranges 注入：{ "15p": { small:[566,621], medium:[622,628], large:[629,700] }, ... } */
 let BUCKET_RANGES={};
-const FEED_TRACK={x:492,w:58,top:95,bottom:1536};
+const FEED_TRACK={x:492,w:58,top:95,bottom:1440};
 let canvas,ctx,running=false,lastTs=0,beltPhase=0,spawnTimer=0,simTime=0,cartonSeq=0;
 let movingFish=[],lanes={},laneList=[],modules={},finished=false;
 let batchFish=[],batchIndex=0,batchLoaded=false;
@@ -510,7 +510,7 @@ function feedTrackToBox(mod){
 }
 function feedTrackToTail(){
   const tx=FEED_TRACK.x;
-  return feedTrackEntryPath().concat([{x:tx,y:FEED_TRACK.bottom,pause:.05},{x:610,y:FEED_TRACK.bottom},{x:610,y:1450},{x:1580,y:1450}]);
+  return feedTrackEntryPath().concat([{x:tx,y:FEED_TRACK.bottom,pause:.05},{x:610,y:FEED_TRACK.bottom},{x:610,y:1354},{x:1580,y:1354}]);
 }
 function log(msg){const box=$('log');const d=document.createElement('div');d.textContent='['+new Date().toLocaleTimeString()+'] '+msg;box.appendChild(d);while(box.childNodes.length>150)box.removeChild(box.firstChild);box.scrollTop=box.scrollHeight}
 
@@ -531,16 +531,16 @@ async function loadBatch(){
 
 function buildLayout(){
   lanes={};laneList=[];modules={};
-  const defs=[{key:'A',x:520,y:105,title:'A模块：15P~40P'},{key:'B',x:520,y:570,title:'B模块：45P~90P'},{key:'C',x:520,y:1035,title:'C模块：100P~150P'}];
+  const defs=[{key:'A',x:520,y:105,title:'A模块：15P~40P'},{key:'B',x:520,y:562,title:'B模块：45P~90P'},{key:'C',x:520,y:1019,title:'C模块：100P~150P'}];
   for(const def of defs){
     modules[def.key]={key:def.key,x:def.x,y:def.y,title:def.title,specs:MODULE_SPECS[def.key],color:MODULE_COLOR[def.key],mergeX:1260,mergeY:def.y+210,busy:false,plan:null,box:{x:1385,y:def.y+170,count:0,weight:0,phase:'idle',sealTimer:0,finished:0}};
     let laneY=def.y+56;
     for(const spec of MODULE_SPECS[def.key]){
       for(const bucket of BUCKETS){
         const lane={id:spec+'_'+bucket,spec,bucket,module:def.key,x1:700,x2:1205,y:laneY,queue:[],visibleSlots:11,gateOpen:false,releaseRemaining:0,releaseTimer:0};
-        lanes[lane.id]=lane;laneList.push(lane);laneY+=20;
+        lanes[lane.id]=lane;laneList.push(lane);laneY+=16;
       }
-      laneY+=16;
+      laneY+=18;
     }
   }
 }
@@ -986,17 +986,17 @@ function drawUpstream(){
   drawPipe([{x:535,y:91},{x:470,y:91},{x:470,y:128}],'#93c5fd',8);
 }
 function drawModule(m){
-  roundRect(m.x,m.y,1070,400,18,'#fff','#cbd5e1',1.5);
+  roundRect(m.x,m.y,1070,448,18,'#fff','#cbd5e1',1.5);
   ctx.fillStyle=m.color;roundTop(m.x,m.y,1070,34,18);ctx.fill();
   ctx.fillStyle='#fff';ctx.font='bold 17px Arial';ctx.fillText(m.title,m.x+14,m.y+22);
   let gy=m.y+56;
   for(const spec of m.specs){
     const dis=!isSpecEnabled(spec);
-    roundRect(m.x+14,gy-10,990,62,10,dis?'#f8fafc':'#fff',dis?'#e2e8f0':'#dbe3ef',1);
-    ctx.fillStyle=dis?'#cbd5e1':m.color;roundRect(m.x+22,gy-3,74,48,10,dis?'#cbd5e1':m.color,dis?'#cbd5e1':m.color,1);
-    ctx.fillStyle=dis?'#94a3b8':'#fff';ctx.font='bold 16px Arial';ctx.fillText(specName(spec),m.x+34,gy+18);
+    roundRect(m.x+14,gy-11,990,66,10,dis?'#f8fafc':'#fff',dis?'#e2e8f0':'#dbe3ef',1);
+    ctx.fillStyle=dis?'#cbd5e1':m.color;roundRect(m.x+22,gy-2,70,44,10,dis?'#cbd5e1':m.color,dis?'#cbd5e1':m.color,1);
+    ctx.fillStyle=dis?'#94a3b8':'#fff';ctx.font='bold 16px Arial';ctx.fillText(specName(spec),m.x+34,gy+16);
     for(const b of BUCKETS){const lane=lanes[spec+'_'+b];drawLane(lane,m);drawGate(lane);drawPipe([{x:lane.x2+32,y:lane.y},{x:m.mergeX,y:lane.y}],dis?'#e2e8f0':'#bbf7d0',5)}
-    gy+=76;
+    gy+=66;
   }
   drawBox(m);
 }
@@ -1024,9 +1024,9 @@ function drawBox(m){
   ctx.fillStyle='#1d4ed8';ctx.font='bold 13px Arial';ctx.fillText('成品 '+b.finished+'箱',x+188,y+48);
 }
 function drawTail(){
-  roundRect(1480,1388,215,100,16,'#fff7ed','#fdba74',1.5);
-  ctx.fillStyle='#9a3412';ctx.font='bold 14px Arial';ctx.fillText('规格外尾料箱',1498,1418);
-  ctx.fillText(String(serverReflowStats?serverReflowStats.outside_count:stats.outsideTail),1580,1418);
+  roundRect(1480,1310,215,88,16,'#fff7ed','#fdba74',1.5);
+  ctx.fillStyle='#9a3412';ctx.font='bold 14px Arial';ctx.fillText('规格外尾料箱',1498,1340);
+  ctx.fillText(String(serverReflowStats?serverReflowStats.outside_count:stats.outsideTail),1580,1340);
 }
 function drawFish(){
   if($('drawMode').value==='light'&&serverInputCount>8000)return;
@@ -1046,7 +1046,7 @@ function drawOneFish(x,y,color,w,direct,id){
   if(id)ctx.fillText('#'+id,-12,12);
   ctx.restore();
 }
-function drawFooter(){ctx.fillStyle='#64748b';ctx.font='12px Arial';ctx.fillText('小中大区间：plan/细分规则.py → /api/config.bucket_ranges · 地址：模块/规格/light|mid|heavy',24,1568)}
+function drawFooter(){ctx.fillStyle='#64748b';ctx.font='12px Arial';ctx.fillText('小中大区间：plan/细分规则.py → /api/config.bucket_ranges · 地址：模块/规格/light|mid|heavy',24,1468)}
 function drawConv(x,y,w,h,hor,base,stripe,label){roundRect(x,y,w,h,7,base,'#97a9bf',1);if(label){ctx.fillStyle='#45637f';ctx.font='11px Arial';ctx.fillText(label,x+6,y-4)}}
 function drawPipe(pts,color,w){ctx.strokeStyle=color;ctx.lineWidth=w;ctx.beginPath();ctx.moveTo(pts[0].x,pts[0].y);for(let i=1;i<pts.length;i++)ctx.lineTo(pts[i].x,pts[i].y);ctx.stroke()}
 function roundTop(x,y,w,h,r){ctx.beginPath();ctx.moveTo(x+r,y);ctx.lineTo(x+w-r,y);ctx.arcTo(x+w,y,x+w,y+r,r);ctx.lineTo(x+w,y+h);ctx.lineTo(x,y+h);ctx.lineTo(x,y+r);ctx.arcTo(x,y,x+r,y,r)}
