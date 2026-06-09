@@ -100,7 +100,9 @@
 <main class="wrap">
   <section class="controls">
     <label>随机种子<input id="seedInput" type="number" value="42"></label>
-    <label>总鱼数<input id="totalFish" type="number" value="25000"></label>
+    <label>结束条件<select id="stopMode"><option value="count">按条数</option><option value="weight">按总重(吨)</option></select></label>
+    <label id="stopCountWrap">目标条数<input id="totalFish" type="number" value="25000" min="1"></label>
+    <label id="stopWeightWrap" style="display:none">目标总重(吨)<input id="totalTons" type="number" value="10" min="0.1" step="0.1"></label>
     <label>速度<input id="speedInput" type="number" value="8" min="1" max="500"></label>
     <label>料道容量倍率<input id="capacityFactor" type="number" value="8"></label>
     <label>队首超时(s)<input id="headTimeout" type="number" value="0"></label>
@@ -116,7 +118,7 @@
     <div id="specToggles"></div>
   </section>
   <section class="stats">
-    <div class="stat"><div class="n">累计来鱼</div><div class="v" id="sInput">0</div></div>
+    <div class="stat"><div class="n">累计来鱼 / 总重</div><div class="v" id="sInput">0</div><div class="hint" id="sInputHint">0 条 · 0.000 t</div></div>
     <div class="stat"><div class="n">完成箱数</div><div class="v" id="sCartons">0</div></div>
     <div class="stat"><div class="n">定向推送</div><div class="v" id="sDirect">0</div></div>
     <div class="stat"><div class="n">在制品</div><div class="v" id="sWip">0</div></div>
@@ -203,7 +205,8 @@ let stats={input:0,cartons:0,directRoute:0,outsideTail:0,fifoReflow:0,batchTail:
 let currentInletDemand=null;
 let syncPollTimer=null,serverFinishedHandled=false,serverSessionKey='';
 let syncPollState=null;
-let serverInputCount=0,intakeSynced=false;
+let serverInputCount=0,serverInputWeight=0,serverStopMode='count',serverStopTargetCount=25000,serverStopTargetTons=10;
+let intakeSynced=false;
 let serverDemands=null,serverInletDemand=null,serverDemandTick=0;
 /** 与 GET /api/state 对齐的回流/尾料分项；null 表示无后端会话，回退本地动画计数 */
 let serverReflowStats=null;
@@ -284,11 +287,10 @@ async function apiJson(path,body){
 }
 
 async function ensureBatchForSession(seed,total){
-  const key=seed+'_'+total+'_'+getEnabledSpecs().join(',');
+  const key=seed+'_'+total+'_'+getStopMode()+'_'+getStopTargetKey()+'_'+getEnabledSpecs().join(',');
   if(batchLoaded&&serverSessionKey===key)return;
   $('seedInput').value=seed;
-  $('totalFish').value=total;
-  await loadBatch();
+  await loadBatch(total);
   serverSessionKey=key;
 }
 
@@ -350,10 +352,10 @@ function getReflowTailHint(){
     const s=serverReflowStats;
     if(s.finished){
       return '回流 '+s.reflow_count+' · 尾料 '+s.unmatched_count
-        +' · 超时尾料 '+s.timeout_tail+' / 超容 '+s.overflow_reflow+' · 后端';
+        +' · 超时尾料 '+s.timeout_tail+' / 超容 '+s.overflow_reflow;
     }
     return '回流 '+s.reflow_count+' · 规格外 '+s.outside_count
-      +' · 待入库 '+s.reflow_queue+' · 超时尾料 '+s.timeout_tail+' · 后端';
+      +' · 待入库 '+s.reflow_queue+' · 超时尾料 '+s.timeout_tail;
   }
   return '本地动画估算';
 }
@@ -369,12 +371,15 @@ async function applyServerState(state,allowSkip){
       }
     }
     if(state&&state.input_count!=null)syncIntakePosition(state.input_count,false);
+    syncRunProgressFromState(state);
     syncServerReflowStats(state);
     return;
   }
   const seed=state.seed!=null?state.seed:Number($('seedInput').value||42);
-  const total=state.total_fish||getTotalFish();
-  await ensureBatchForSession(seed,total);
+  syncStopSettingsFromState(state);
+  syncRunProgressFromState(state);
+  const batchTotal=state.batch_total||getBatchTotal();
+  await ensureBatchForSession(seed,batchTotal);
   finished=!!state.finished;
   if(state.paused){
     running=false;
@@ -402,7 +407,7 @@ async function applyServerState(state,allowSkip){
     intakeSynced=true;
     let tail=0;for(const lane of laneList)tail+=lane.queue.length;
     stats.batchTail=tail;
-    log('批末完成（与统计面板同步）：入料 '+(state.input_count||0)+'/'+total);
+    log('批末完成（与统计面板同步）：'+formatProgressHint(state.input_count||0,state.input_weight||0,state));
   }
   if(!state.finished)serverFinishedHandled=false;
 }
@@ -439,7 +444,70 @@ function startSyncPoll(){
 }
 
 function $(id){return document.getElementById(id)}
+function getStopMode(){return $('stopMode').value||'count'}
 function getTotalFish(){return Math.max(1,Number($('totalFish').value||25000))}
+function getTotalTons(){return Math.max(0.1,Number($('totalTons').value||10))}
+function getBatchTotal(){
+  if(getStopMode()==='weight'){
+    const estimated=Math.ceil(getTotalTons()*1000000/250)+5000;
+    return Math.max(25000,estimated);
+  }
+  return getTotalFish();
+}
+function getStopTargetKey(){
+  return getStopMode()==='weight'?String(getTotalTons()):String(getTotalFish());
+}
+function buildStartBody(extra){
+  extra=extra||{};
+  return Object.assign({
+    seed:Number($('seedInput').value||42),
+    total:getTotalFish(),
+    move_timeout:getHeadTimeout(),
+    speed:getSpeed(),
+    enabled_specs:getEnabledSpecs(),
+    stop_mode:getStopMode(),
+    stop_weight_tons:getTotalTons()
+  },extra);
+}
+function formatProgressHint(count,weightG,state){
+  const tons=(weightG||0)/1e6;
+  const mode=(state&&state.stop_mode)||serverStopMode||getStopMode();
+  if(mode==='weight'){
+    const target=(state&&state.stop_target_weight_tons)!=null?state.stop_target_weight_tons:serverStopTargetTons;
+    return count.toLocaleString()+' 条 · '+tons.toFixed(3)+' / '+Number(target).toFixed(1)+' t';
+  }
+  const target=(state&&state.stop_target_count)!=null?state.stop_target_count:serverStopTargetCount;
+  return count.toLocaleString()+' / '+Number(target).toLocaleString()+' 条 · '+tons.toFixed(3)+' t';
+}
+function calcProgressPct(count,weightG,state){
+  const mode=(state&&state.stop_mode)||serverStopMode||getStopMode();
+  if(mode==='weight'){
+    const targetTons=(state&&state.stop_target_weight_tons)!=null?state.stop_target_weight_tons:serverStopTargetTons;
+    const tons=(weightG||0)/1e6;
+    return targetTons>0?Math.min(100,tons/targetTons*100):0;
+  }
+  const target=(state&&state.stop_target_count)!=null?state.stop_target_count:serverStopTargetCount;
+  return target>0?Math.min(100,count/target*100):0;
+}
+function updateStopModeUI(){
+  const weight=getStopMode()==='weight';
+  $('stopCountWrap').style.display=weight?'none':'';
+  $('stopWeightWrap').style.display=weight?'':'none';
+}
+function syncStopSettingsFromState(state){
+  if(!state||state.status==='idle'&&!state.running&&!state.finished)return;
+  if(state.stop_mode)$('stopMode').value=state.stop_mode;
+  if(state.stop_target_count!=null)$('totalFish').value=state.stop_target_count;
+  if(state.stop_target_weight_tons!=null)$('totalTons').value=state.stop_target_weight_tons;
+  updateStopModeUI();
+}
+function syncRunProgressFromState(state){
+  if(!state)return;
+  serverStopMode=state.stop_mode||serverStopMode;
+  if(state.stop_target_count!=null)serverStopTargetCount=state.stop_target_count;
+  if(state.stop_target_weight_tons!=null)serverStopTargetTons=state.stop_target_weight_tons;
+  if(state.input_weight!=null)serverInputWeight=state.input_weight;
+}
 function getSpeed(){return Math.max(1,Math.min(500,Number($('speedInput').value||8)))}
 let speedSyncTimer=null;
 function scheduleSpeedSync(){
@@ -521,19 +589,20 @@ function feedTrackToTail(){
 }
 function log(msg){const box=$('log');const d=document.createElement('div');d.textContent='['+new Date().toLocaleTimeString()+'] '+msg;box.appendChild(d);while(box.childNodes.length>150)box.removeChild(box.firstChild);box.scrollTop=box.scrollHeight}
 
-async function loadBatch(){
+async function loadBatch(batchTotal){
   const seed=Number($('seedInput').value||42);
-  const total=getTotalFish();
+  const total=batchTotal!=null?batchTotal:getBatchTotal();
   const enabled=getEnabledSpecs().join(',');
-  log('加载批次 seed='+seed+' 启用='+enabled+' …');
+  log('加载批次 seed='+seed+' · 上限 '+total+' 条 · 结束条件 '+ (getStopMode()==='weight'?getTotalTons()+' t':getTotalFish()+' 条') +' …');
   const res=await fetch('/api/batch?seed='+seed+'&total='+total+enabledSpecsQuery());
   const data=await res.json();
   batchFish=data.fish||[];
   batchIndex=0;
   batchLoaded=true;
-  serverSessionKey=seed+'_'+total+'_'+enabled;
+  serverSessionKey=seed+'_'+total+'_'+getStopMode()+'_'+getStopTargetKey()+'_'+enabled;
   const outsideN=batchFish.filter(f=>f.outside).length;
-  log('批次就绪：'+batchFish.length+' 条（规格外 '+outsideN+'，仅真规格外）');
+  const weightKg=(batchFish.reduce((s,f)=>s+(f.weight||0),0)/1000).toFixed(1);
+  log('批次就绪：'+batchFish.length+' 条 · 批次总重约 '+weightKg+' kg（规格外 '+outsideN+'）');
 }
 
 function buildLayout(){
@@ -876,9 +945,10 @@ function moveAlongPath(f,dtScaled){
 
 function updateUI(){
   let queued=0;for(const l of laneList)queued+=l.queue.length;
-  const total=getTotalFish();
+  const state=syncPollState||{};
   $('sInput').textContent=serverInputCount;
-  $('progressBar').style.width=Math.min(100,serverInputCount/total*100)+'%';
+  $('sInputHint').textContent=formatProgressHint(serverInputCount,serverInputWeight,state);
+  $('progressBar').style.width=calcProgressPct(serverInputCount,serverInputWeight,state)+'%';
   $('sCartons').textContent=stats.cartons;
   $('sDirect').textContent=stats.directRoute;
   $('sWip').textContent=queued+movingFish.length;
@@ -911,7 +981,7 @@ function frame(ts){if(!lastTs)lastTs=ts;const dt=Math.min(.05,(ts-lastTs)/1000);
 
 async function resetLocal(){
   running=false;finished=false;lastTs=0;beltPhase=0;spawnTimer=0;simTime=0;cartonSeq=0;
-  serverFinishedHandled=false;serverSessionKey='';serverInputCount=0;intakeSynced=false;
+  serverFinishedHandled=false;serverSessionKey='';serverInputCount=0;serverInputWeight=0;intakeSynced=false;
   serverDemands=null;serverInletDemand=null;serverDemandTick=0;serverReflowStats=null;
   movingFish=[];stats={input:0,cartons:0,directRoute:0,outsideTail:0,fifoReflow:0,batchTail:0,overflow:0,timeout:0};
   batchIndex=0;
@@ -927,39 +997,34 @@ async function reset(){
 async function fastRun(){
   running=false;
   if(!batchLoaded)await loadBatch();
-  const body={
-    seed:Number($('seedInput').value||42),
-    total:getTotalFish(),
-    move_timeout:getHeadTimeout(),
-    speed:Math.max(getSpeed(),200),
-    enabled_specs:getEnabledSpecs()
-  };
+  const body=buildStartBody({speed:Math.max(getSpeed(),200)});
   const cur=await apiJson('/api/state');
   if(!cur.running){
     const res=await apiJson('/api/start',body);
     if(!res.ok){log(res.error||'启动失败');return}
   }
-  log('快速跑完：后端加速运行…');
+  log('快速跑完：'+ (getStopMode()==='weight'?'目标 '+getTotalTons()+' t':'目标 '+getTotalFish()+' 条') +' · 后端加速运行…');
   while(true){
     const state=await apiJson('/api/state');
     running=false;
     finished=!!state.finished;
     serverInputCount=state.input_count||0;
     stats.input=serverInputCount;
+    syncRunProgressFromState(state);
     batchIndex=serverInputCount;
     intakeSynced=true;
     if(state.cartons!=null)stats.cartons=state.cartons;
     syncServerReflowStats(state);
     if(state.finished&&!serverFinishedHandled){
       serverFinishedHandled=true;
-      log('批末完成（与统计面板同步）：入料 '+serverInputCount+'/'+getTotalFish());
+      log('批末完成（与统计面板同步）：'+formatProgressHint(serverInputCount,state.input_weight||0,state));
     }
     updateUI();
     if(state.finished)break;
     await new Promise(r=>setTimeout(r,80));
   }
   draw();
-  log('快速跑完 '+getTotalFish()+' 条（入料已与统计面板同步）');
+  log('快速跑完结束 · '+formatProgressHint(serverInputCount,serverInputWeight,syncPollState));
 }
 
 /* ---- 绘制（精简自样例） ---- */
@@ -1065,6 +1130,10 @@ window.addEventListener('load',async function(){
   if(location.hash==='#stats')setActiveView('stats');
   $('speedInput').addEventListener('input',scheduleSpeedSync);
   $('speedInput').addEventListener('change',scheduleSpeedSync);
+  $('stopMode').addEventListener('change',()=>{updateStopModeUI();loadBatch().catch(e=>console.error(e))});
+  $('totalFish').addEventListener('change',()=>{if(getStopMode()==='count')loadBatch().catch(e=>console.error(e))});
+  $('totalTons').addEventListener('change',()=>{if(getStopMode()==='weight')loadBatch().catch(e=>console.error(e))});
+  updateStopModeUI();
   $('startBtn').onclick=async()=>{
     if(!batchLoaded)await loadBatch();
     const cur=await apiJson('/api/state');
@@ -1080,20 +1149,15 @@ window.addEventListener('load',async function(){
       }
       return;
     }
-    const body={
-      seed:Number($('seedInput').value||42),
-      total:getTotalFish(),
-      move_timeout:getHeadTimeout(),
-      speed:getSpeed(),
-      enabled_specs:getEnabledSpecs()
-    };
+    const body=buildStartBody();
     const res=await apiJson('/api/start',body);
     if(!res.ok){log(res.error||'启动失败');return}
     intakeSynced=false;
     batchIndex=0;
     spawnTimer=0;
+    syncRunProgressFromState(res.state);
     await applyServerState(res.state,false);
-    log('开始动画监控（与统计面板同步）');
+    log('开始 · '+ (getStopMode()==='weight'?'按总重 '+getTotalTons()+' t':'按条数 '+getTotalFish()+' 条'));
   };
   $('pauseBtn').onclick=async()=>{
     const res=await apiJson('/api/pause');
@@ -1108,6 +1172,9 @@ window.addEventListener('load',async function(){
   try{
     const cfg=await apiJson('/api/config');
     if(cfg.default_enabled_specs)setEnabledSpecs(cfg.default_enabled_specs);
+    if(cfg.default_stop_weight_tons!=null)$('totalTons').value=cfg.default_stop_weight_tons;
+    if(cfg.default_stop_mode)$('stopMode').value=cfg.default_stop_mode;
+    updateStopModeUI();
     if(applyBucketRangesFromConfig(cfg)){
       log('小中大区间已同步：'+ (cfg.bucket_rules_source||'plan/细分规则.py'));
       const sample=['15p','60p','120p'].filter(s=>BUCKET_RANGES[s]);

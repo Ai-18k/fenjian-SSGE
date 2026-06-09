@@ -180,13 +180,18 @@ from Scheduler_Engine import (
     DEFAULT_ENABLED_SPECS,
     DEFAULT_MOVE_TIMEOUT,
     DEFAULT_SEED,
+    DEFAULT_STOP_WEIGHT_G,
+    DEFAULT_STOP_WEIGHT_TONS,
     DEFAULT_TOTAL,
+    STOP_MODE_COUNT,
+    STOP_MODE_WEIGHT,
     FishTrace,
     MODULE_SPECS,
     SPECS,
     TARGET_MAX,
     TARGET_MIN,
     SchedulerEngine,
+    batch_total_for_run,
     describe_tail_trace,
     load_or_generate_batch,
     normalize_enabled_specs,
@@ -276,8 +281,14 @@ class SimulationRunner:
         move_timeout: int = DEFAULT_MOVE_TIMEOUT,
         speed: float = 10.0,
         enabled_specs: tuple[str, ...] | list[str] | None = None,
+        stop_mode: str = STOP_MODE_COUNT,
+        stop_weight_g: int = DEFAULT_STOP_WEIGHT_G,
     ) -> None:
         enabled = parse_enabled_specs(enabled_specs)
+        if stop_mode not in (STOP_MODE_COUNT, STOP_MODE_WEIGHT):
+            stop_mode = STOP_MODE_COUNT
+        stop_count = max(1, total)
+        batch_total = batch_total_for_run(stop_mode, stop_count, stop_weight_g)
         with self.lock:
             if self.running:
                 raise RuntimeError("模拟已在运行")
@@ -285,13 +296,16 @@ class SimulationRunner:
             self.paused = False
             self.error = None
             self.speed = max(0.1, speed)
-            records = load_or_generate_batch(seed=seed, total=total, enabled_specs=enabled)
+            records = load_or_generate_batch(seed=seed, total=batch_total, enabled_specs=enabled)
             self.engine = SchedulerEngine(
                 batch_records=records,
                 seed=seed,
                 move_timeout=move_timeout,
                 specs=enabled,
-                log_every=max(50, total // 50),
+                log_every=max(50, batch_total // 50),
+                stop_mode=stop_mode,
+                stop_count=stop_count,
+                stop_weight_g=stop_weight_g,
             )
             self.running = True
 
@@ -538,6 +552,8 @@ class Handler(BaseHTTPRequestHandler):
                 {
                     "default_seed": DEFAULT_SEED,
                     "default_total": DEFAULT_TOTAL,
+                    "default_stop_mode": STOP_MODE_COUNT,
+                    "default_stop_weight_tons": DEFAULT_STOP_WEIGHT_TONS,
                     "default_move_timeout": DEFAULT_MOVE_TIMEOUT,
                     "default_enabled_specs": list(DEFAULT_ENABLED_SPECS),
                     "all_specs": list(ALL_SPECS),
@@ -648,12 +664,18 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/api/start":
             try:
+                stop_mode = str(body.get("stop_mode", STOP_MODE_COUNT))
+                stop_weight_tons = float(
+                    body.get("stop_weight_tons", DEFAULT_STOP_WEIGHT_TONS)
+                )
                 RUNNER.start(
                     seed=int(body.get("seed", DEFAULT_SEED)),
                     total=int(body.get("total", DEFAULT_TOTAL)),
                     move_timeout=int(body.get("move_timeout", DEFAULT_MOVE_TIMEOUT)),
                     speed=float(body.get("speed", 10)),
                     enabled_specs=body.get("enabled_specs"),
+                    stop_mode=stop_mode,
+                    stop_weight_g=int(stop_weight_tons * 1_000_000),
                 )
                 return self._json({"ok": True, "state": RUNNER.get_state()})
             except Exception as exc:

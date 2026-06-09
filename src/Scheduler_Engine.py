@@ -86,6 +86,22 @@ DEFAULT_TOTAL = 25000
 DEFAULT_SEED = 42
 DEFAULT_MOVE_TIMEOUT = 30
 DEFAULT_CAP_FACTOR = 8
+STOP_MODE_COUNT = "count"
+STOP_MODE_WEIGHT = "weight"
+DEFAULT_STOP_WEIGHT_TONS = 10.0
+DEFAULT_STOP_WEIGHT_G = int(DEFAULT_STOP_WEIGHT_TONS * 1_000_000)
+
+
+def batch_total_for_run(
+    stop_mode: str,
+    stop_count: int,
+    stop_weight_g: int,
+) -> int:
+    """按结束条件计算需预加载的批次上限（按总重时多备鱼以防批次不足）。"""
+    if stop_mode != STOP_MODE_WEIGHT:
+        return max(1, stop_count)
+    estimated = math.ceil(stop_weight_g / 250) + 5000
+    return max(DEFAULT_TOTAL, estimated)
 
 
 FISH_CACHE=[]
@@ -186,6 +202,7 @@ class Stats:
     """作用：引擎累计统计（入料、成盒、回流、规格外、尾料分项）。
     前端：index.html 顶栏统计卡；fifo_monitor.html「累计来鱼/完成箱数/回流尾料」；GET /api/state。"""
     input_count: int = 0
+    input_weight: int = 0
     packed_fish: int = 0
     cartons: int = 0
     outside_count: int = 0
@@ -803,9 +820,12 @@ class SchedulerEngine:
         cap_factor: int = DEFAULT_CAP_FACTOR,
         verbose: bool = False,
         log_every: int = 500,
+        stop_mode: str = STOP_MODE_COUNT,
+        stop_count: int = DEFAULT_TOTAL,
+        stop_weight_g: int = DEFAULT_STOP_WEIGHT_G,
     ):
         """作用：初始化引擎（批次、料道、追踪器、统计）；POST /api/start 时创建。
-        前端：index/fifo_monitor「开始模拟」；控制种子、条数、超时、启用规格、料道容量倍率。"""
+        前端：index/fifo_monitor「开始模拟」；控制种子、条数/总重、超时、启用规格、料道容量倍率。"""
         self.seed = seed
         self.interval = interval
         self.specs = specs
@@ -813,9 +833,15 @@ class SchedulerEngine:
         self.cap_factor = cap_factor
         self.verbose = verbose
         self.log_every = log_every
+        self.stop_mode = stop_mode if stop_mode in (STOP_MODE_COUNT, STOP_MODE_WEIGHT) else STOP_MODE_COUNT
+        self.stop_count = max(1, stop_count)
+        self.stop_weight_g = max(1, stop_weight_g)
 
         self.batch = batch_records or load_or_generate_batch(seed=seed)
         self.total_fish = len(self.batch)
+        if self.stop_mode == STOP_MODE_COUNT:
+            self.total_fish = min(self.total_fish, self.stop_count)
+            self.batch = self.batch[: self.total_fish]
         self._cursor = 0
 
         self.lanes = SortingLanes(specs=specs)
@@ -1062,8 +1088,21 @@ class SchedulerEngine:
             "seed": self.seed,
             "move_timeout": self.move_timeout,
             "enabled_specs": list(self.specs),
-            "total_fish": self.total_fish,
+            "stop_mode": self.stop_mode,
+            "stop_target_count": self.stop_count if self.stop_mode == STOP_MODE_COUNT else None,
+            "stop_target_weight_g": self.stop_weight_g if self.stop_mode == STOP_MODE_WEIGHT else None,
+            "stop_target_weight_tons": (
+                round(self.stop_weight_g / 1_000_000, 3)
+                if self.stop_mode == STOP_MODE_WEIGHT
+                else None
+            ),
+            "batch_total": self.total_fish,
+            "total_fish": (
+                self.stop_count if self.stop_mode == STOP_MODE_COUNT else self.total_fish
+            ),
             "input_count": self.stats.input_count,
+            "input_weight": self.stats.input_weight,
+            "input_weight_tons": round(self.stats.input_weight / 1_000_000, 3),
             "cartons": self.stats.cartons,
             "packed_fish": self.stats.packed_fish,
             "outside_count": self.stats.outside_count,
@@ -1360,16 +1399,23 @@ class SchedulerEngine:
                     }
                 )
 
+    def _intake_complete(self) -> bool:
+        """作用：判断是否已达入料结束条件（按条数或按累计总重）。"""
+        if self.stop_mode == STOP_MODE_WEIGHT:
+            return self.stats.input_weight >= self.stop_weight_g
+        return self._cursor >= self.stop_count
+
     def process_one(self) -> bool:
-        """作用：推进仿真一步——入料→回流再入道→封箱→防堵；游标耗尽返回 False。
+        """作用：推进仿真一步——入料→回流再入道→封箱→防堵；达到结束条件返回 False。
         前端：web_server 后台线程按 speed 调用；两页 input_count；fifo_monitor 逐条 spawn。"""
-        if self._cursor >= self.total_fish:
+        if self._cursor >= self.total_fish or self._intake_complete():
             return False
 
         self._sync_tick()
         record = self.batch[self._cursor]
         self._cursor += 1
         self.stats.input_count += 1
+        self.stats.input_weight += record.weight
 
         # 按重量映射规格/分区；规格外或禁用规格 → outside 队列，否则入对应料道
         fish = record_to_fish(record, self.tick, enabled=set(self.specs))
@@ -1408,13 +1454,20 @@ class SchedulerEngine:
         self._record_history()
 
         if self.stats.input_count % self.log_every == 0:
+            if self.stop_mode == STOP_MODE_WEIGHT:
+                progress = (
+                    f"累计 {self.stats.input_weight / 1_000_000:.2f}t/"
+                    f"{self.stop_weight_g / 1_000_000:.2f}t"
+                )
+            else:
+                progress = f"{self.stats.input_count}/{self.stop_count}"
             self._log(
-                f"进度 {self.stats.input_count}/{self.total_fish} | "
+                f"进度 {progress} | "
                 f"成盒 {self.stats.cartons} | 装箱鱼 {self.stats.packed_fish} | "
                 f"回流 {self.stats.reflow_count} | 规格外 {self.stats.outside_count}",
                 force=True,
             )
-        return True
+        return not self._intake_complete()
 
     def finish_batch(self) -> None:
         """作用：批末扫尾（继续封箱+回流）→标记尾料→写 CSV 报告→finished=true。
@@ -1474,6 +1527,11 @@ class SchedulerEngine:
         print("=" * 60)
         print(f"  批次种子     : {self.seed}")
         print(f"  入料总数     : {self.stats.input_count}")
+        print(f"  入料总重     : {self.stats.input_weight:,}g ({self.stats.input_weight / 1_000_000:.3f}t)")
+        if self.stop_mode == STOP_MODE_WEIGHT:
+            print(f"  结束条件     : 总重 ≥ {self.stop_weight_g / 1_000_000:.3f}t")
+        else:
+            print(f"  结束条件     : 条数 {self.stop_count}")
         print(f"  成功装盒数   : {self.stats.cartons}")
         print(f"  成功装箱鱼   : {self.stats.packed_fish}")
         print(f"  规格外       : {self.stats.outside_count}")
