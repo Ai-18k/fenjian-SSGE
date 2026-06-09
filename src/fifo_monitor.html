@@ -20,14 +20,18 @@
     .stat{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:10px 12px}
     .stat .n{font-size:11px;color:var(--muted)}.stat .v{font-size:22px;font-weight:800;margin-top:2px}
     .stat .hint{font-size:10px;color:var(--muted);margin-top:2px;line-height:1.25}
-    .grid{display:grid;grid-template-columns:1fr 380px;gap:12px}
-    @media(max-width:1200px){.grid{grid-template-columns:1fr}}
+    .grid{display:grid;grid-template-columns:1fr 380px;grid-template-areas:"scene side" "log log";gap:12px;align-items:start}
+    @media(max-width:1200px){.grid{grid-template-columns:1fr;grid-template-areas:"scene" "side" "log"}}
+    .panel.scene-wrap{grid-area:scene;min-width:0}
+    .side-col{grid-area:side;display:grid;gap:12px;align-content:start}
+    .log-panel{grid-area:log;margin:0}
     .panel{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:12px;overflow:hidden}
     .panel h2{margin:0 0 10px;font-size:15px}
     .scene-wrap{overflow:visible}
     .scene-wrap canvas{display:block;width:100%;max-width:1740px;height:auto;background:#f8fafc;border:1px solid #dbe5f3;border-radius:10px}
+    .scene-caption{margin:8px 0 0;font-size:11px;color:var(--muted);line-height:1.4}
     canvas{display:block;background:#f8fafc;border:1px solid #dbe5f3;border-radius:10px}
-    .log{height:540px;overflow:auto;background:#f8fafc;border:1px solid var(--line);border-radius:10px;padding:8px;font:12px/1.5 Consolas,monospace}
+    .log{height:200px;overflow:auto;background:#f8fafc;border:1px solid var(--line);border-radius:10px;padding:8px;font:12px/1.5 Consolas,monospace;width:100%}
     .demand-card{border:1px solid #bfdbfe;border-radius:10px;padding:8px 10px;margin-bottom:8px;background:#eff6ff;font-size:12px}
     .demand-card.active{border-color:var(--green);background:#ecfdf5}
     .demand-scroll{max-height:320px;overflow-y:auto}
@@ -121,22 +125,25 @@
   </section>
   <div class="bar"><div id="progressBar"></div></div>
   <section class="grid">
-    <div class="panel scene-wrap"><canvas id="scene" width="1740" height="1480"></canvas></div>
-    <div>
-      <div class="panel" style="margin-bottom:12px">
+    <div class="panel scene-wrap">
+      <canvas id="scene" width="1740" height="1475"></canvas>
+      <p class="scene-caption">小中大区间：plan/细分规则.py → /api/config.bucket_ranges · 地址：模块/规格/light|mid|heavy</p>
+    </div>
+    <aside class="side-col">
+      <div class="panel">
         <h2>进料口 · 当前需求广播</h2>
         <div class="inlet-banner" id="inletBanner">等待开始…</div>
         <h2>需求地址列表 <span id="demandHint" style="font-size:11px;color:#64748b;font-weight:400"></span></h2>
         <div class="demand-scroll" id="demandPanel"></div>
       </div>
-      <div class="panel" style="margin-bottom:12px">
+      <div class="panel">
         <h2>装箱工位状态</h2>
         <div id="moduleState"></div>
       </div>
-      <div class="panel">
-        <h2>运行日志</h2>
-        <div class="log" id="log"></div>
-      </div>
+    </aside>
+    <div class="panel log-panel">
+      <h2>运行日志</h2>
+      <div class="log" id="log"></div>
     </div>
   </section>
 </main>
@@ -188,7 +195,7 @@ const BUCKET_COLOR={light:'#7dd3fc',mid:'#86efac',heavy:'#fbbf24'};
 const BUCKETS=['light','mid','heavy'];
 /** 由 /api/config.bucket_ranges 注入：{ "15p": { small:[566,621], medium:[622,628], large:[629,700] }, ... } */
 let BUCKET_RANGES={};
-const FEED_TRACK={x:492,w:58,top:95,bottom:1440};
+const FEED_TRACK={x:492,w:58,top:95,bottom:1395};
 let canvas,ctx,running=false,lastTs=0,beltPhase=0,spawnTimer=0,simTime=0,cartonSeq=0;
 let movingFish=[],lanes={},laneList=[],modules={},finished=false;
 let batchFish=[],batchIndex=0,batchLoaded=false;
@@ -957,7 +964,7 @@ async function fastRun(){
 
 /* ---- 绘制（精简自样例） ---- */
 function draw(){if(!ctx)return;ctx.clearRect(0,0,canvas.width,canvas.height);drawBg();
-  drawFeedTrack();drawUpstream();for(const m of Object.values(modules))drawModule(m);drawTail();drawFish();drawFooter()}
+  drawFeedTrack();drawUpstream();for(const m of Object.values(modules))drawModule(m);drawTail();drawFish()}
 function drawBg(){ctx.fillStyle='#f8fafc';ctx.fillRect(0,0,canvas.width,canvas.height)}
 function drawFeedTrack(){
   const {x,w,top,bottom}=FEED_TRACK,left=x-w/2,h=bottom-top;
@@ -1046,7 +1053,6 @@ function drawOneFish(x,y,color,w,direct,id){
   if(id)ctx.fillText('#'+id,-12,12);
   ctx.restore();
 }
-function drawFooter(){ctx.fillStyle='#64748b';ctx.font='12px Arial';ctx.fillText('小中大区间：plan/细分规则.py → /api/config.bucket_ranges · 地址：模块/规格/light|mid|heavy',24,1468)}
 function drawConv(x,y,w,h,hor,base,stripe,label){roundRect(x,y,w,h,7,base,'#97a9bf',1);if(label){ctx.fillStyle='#45637f';ctx.font='11px Arial';ctx.fillText(label,x+6,y-4)}}
 function drawPipe(pts,color,w){ctx.strokeStyle=color;ctx.lineWidth=w;ctx.beginPath();ctx.moveTo(pts[0].x,pts[0].y);for(let i=1;i<pts.length;i++)ctx.lineTo(pts[i].x,pts[i].y);ctx.stroke()}
 function roundTop(x,y,w,h,r){ctx.beginPath();ctx.moveTo(x+r,y);ctx.lineTo(x+w-r,y);ctx.arcTo(x+w,y,x+w,y+r,r);ctx.lineTo(x+w,y+h);ctx.lineTo(x,y+h);ctx.lineTo(x,y+r);ctx.arcTo(x,y,x+r,y,r)}
