@@ -319,7 +319,7 @@
   <header>
     <div>
       <h1>智能分拣系统 · 可视化监控</h1>
-      <p>25000 条种子批次 · FIFO 小/中/大料道 · 5kg 装盒 · 超时记尾料
+      <p>种子批次 · 可按条数或总重(吨)结束 · FIFO 小/中/大料道 · 5kg 装盒 · 超时记尾料
         <a href="/monitor">→ FIFO 动画监控（推荐单页）</a>
       </p>
     </div>
@@ -329,7 +329,14 @@
   <main>
     <div class="controls">
       <div class="field"><label>随机种子</label><input id="seed" type="number" value="42"></div>
-      <div class="field"><label>总条数</label><input id="total" type="number" value="25000"></div>
+      <div class="field"><label>结束条件</label>
+        <select id="stopMode">
+          <option value="count">按条数</option>
+          <option value="weight">按总重(吨)</option>
+        </select>
+      </div>
+      <div class="field" id="stopCountWrap"><label>目标条数</label><input id="total" type="number" value="25000" min="1"></div>
+      <div class="field" id="stopWeightWrap" style="display:none"><label>目标总重(吨)</label><input id="totalTons" type="number" value="10" min="0.1" step="0.1"></div>
       <div class="field"><label>移动超时(s)</label><input id="moveTimeout" type="number" value="120"></div>
       <div class="field"><label>模拟倍速</label><input id="speed" type="number" value="50" min="1"></div>
       <button id="btnStart">开始模拟</button>
@@ -347,7 +354,7 @@
 
     <div class="stats">
       <div class="stat"><div class="label">运行时间</div><div class="value" id="sTick">0</div><div class="hint" id="sTickHint">秒 · 真实经过时间</div></div>
-      <div class="stat"><div class="label">入料进度</div><div class="value" id="sInput">0</div><div class="hint" id="sInputHint">/ 25000</div></div>
+      <div class="stat"><div class="label">入料进度 / 总重</div><div class="value" id="sInput">0</div><div class="hint" id="sInputHint">0 条 · 0.000 t</div></div>
       <div class="stat"><div class="label">成功装盒</div><div class="value" id="sCartons">0</div><div class="hint">4980~5030g</div></div>
       <div class="stat"><div class="label">装箱鱼数</div><div class="value" id="sPacked">0</div></div>
       <div class="stat"><div class="label">回流动作</div><div class="value" id="sReflow">0</div><div class="hint" id="sReflowHint">超容回流 · 累计次数</div></div>
@@ -676,6 +683,66 @@
       return +$("seed").value || 42;
     }
 
+    function getStopMode() {
+      return $("stopMode").value || "count";
+    }
+
+    function getTotalTons() {
+      return Math.max(0.1, +($("totalTons").value || 10));
+    }
+
+    function updateStopModeUI() {
+      const weight = getStopMode() === "weight";
+      $("stopCountWrap").style.display = weight ? "none" : "";
+      $("stopWeightWrap").style.display = weight ? "" : "none";
+    }
+
+    function formatProgressHint(state) {
+      const count = state.input_count ?? 0;
+      const weightG = state.input_weight ?? 0;
+      const tons = weightG / 1e6;
+      const mode = state.stop_mode || getStopMode();
+      if (mode === "weight") {
+        const target = state.stop_target_weight_tons ?? getTotalTons();
+        return `${count.toLocaleString()} 条 · ${tons.toFixed(3)} / ${Number(target).toFixed(1)} t`;
+      }
+      const target = state.stop_target_count ?? (+$("total").value || 25000);
+      return `${count.toLocaleString()} / ${Number(target).toLocaleString()} 条 · ${tons.toFixed(3)} t`;
+    }
+
+    function calcProgressPct(state) {
+      const count = state.input_count ?? 0;
+      const weightG = state.input_weight ?? 0;
+      const mode = state.stop_mode || getStopMode();
+      if (mode === "weight") {
+        const targetTons = state.stop_target_weight_tons ?? getTotalTons();
+        const tons = weightG / 1e6;
+        return targetTons > 0 ? Math.min(100, tons / targetTons * 100) : 0;
+      }
+      const target = state.stop_target_count ?? (+$("total").value || 25000);
+      return target > 0 ? Math.min(100, count / target * 100) : 0;
+    }
+
+    function syncStopSettingsFromState(state) {
+      if (!state || (state.status === "idle" && !state.running && !state.finished)) return;
+      if (state.stop_mode) $("stopMode").value = state.stop_mode;
+      if (state.stop_target_count != null) $("total").value = state.stop_target_count;
+      if (state.stop_target_weight_tons != null) $("totalTons").value = state.stop_target_weight_tons;
+      updateStopModeUI();
+    }
+
+    function buildStartBody(enabledSpecs) {
+      return {
+        seed: +$("seed").value,
+        total: +$("total").value,
+        move_timeout: +$("moveTimeout").value,
+        speed: +$("speed").value,
+        enabled_specs: enabledSpecs,
+        stop_mode: getStopMode(),
+        stop_weight_tons: getTotalTons(),
+      };
+    }
+
     function formatFishInCarton(r) {
       const list = r.fish && r.fish.length
         ? r.fish
@@ -897,6 +964,7 @@
     }
 
     function updateUI(state) {
+      syncStopSettingsFromState(state);
       if (state.status === "idle" && !state.running) {
         setStatus("idle");
         $("btnStart").disabled = false;
@@ -909,9 +977,8 @@
         setStatus(state.paused ? "paused" : "idle");
         if (state.input_count != null) {
           $("sInput").textContent = state.input_count;
-          const total = state.total_fish || +$("total").value || 1;
-          $("sInputHint").textContent = "/ " + total;
-          const pct = Math.min(100, (state.input_count / total) * 100);
+          $("sInputHint").textContent = formatProgressHint(state);
+          const pct = calcProgressPct(state);
           $("progressBar").style.width = pct + "%";
           $("progressText").textContent = pct.toFixed(1) + "%";
         }
@@ -922,12 +989,11 @@
         return;
       }
       if (state.seed != null) $("seed").value = state.seed;
-      if (state.total_fish != null) $("total").value = state.total_fish;
       if (state.move_timeout != null) $("moveTimeout").value = state.move_timeout;
       setStatus(state.status);
       $("sTick").textContent = state.tick ?? 0;
       $("sInput").textContent = state.input_count ?? 0;
-      $("sInputHint").textContent = "/ " + (state.total_fish ?? 0);
+      $("sInputHint").textContent = formatProgressHint(state);
       $("sCartons").textContent = state.cartons ?? 0;
       $("sPacked").textContent = state.packed_fish ?? 0;
       const mt = state.move_timeout ?? ($("moveTimeout").value || 30);
@@ -938,7 +1004,7 @@
       $("sUnmatched").textContent = state.unmatched_count ?? 0;
       $("sReflowQ").textContent = state.reflow_queue ?? 0;
 
-      const pct = state.total_fish ? Math.min(100, (state.input_count / state.total_fish) * 100) : 0;
+      const pct = calcProgressPct(state);
       $("progressBar").style.width = pct + "%";
       $("progressText").textContent = pct.toFixed(1) + "%";
 
@@ -1016,13 +1082,7 @@
           if (Array.isArray(parsed) && parsed.length) enabledSpecs = parsed;
         }
       } catch (_) {}
-      const body = {
-        seed: +$("seed").value,
-        total: +$("total").value,
-        move_timeout: +$("moveTimeout").value,
-        speed: +$("speed").value,
-        enabled_specs: enabledSpecs,
-      };
+      const body = buildStartBody(enabledSpecs);
         $("btnReport").href = "/api/report?seed=" + body.seed;
         const res = await api("/api/start", body);
         if (!res.ok) { alert(res.error || "启动失败"); return; }
@@ -1042,10 +1102,16 @@
     wireOverflowButtons($("btnViewOverflowEmbed"));
     $("dataDialogClose").onclick = () => $("dataDialog").close();
 
+    $("stopMode").addEventListener("change", updateStopModeUI);
+    updateStopModeUI();
+
     api("/api/config").then(cfg => {
       $("seed").value = cfg.default_seed;
       $("total").value = cfg.default_total;
+      if (cfg.default_stop_weight_tons != null) $("totalTons").value = cfg.default_stop_weight_tons;
+      if (cfg.default_stop_mode) $("stopMode").value = cfg.default_stop_mode;
       $("moveTimeout").value = cfg.default_move_timeout;
+      updateStopModeUI();
     });
     if (pollTimer) clearTimeout(pollTimer);
     pollLoop();
