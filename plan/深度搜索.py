@@ -47,6 +47,10 @@ SPECS: dict[str, dict] = {
 
 BUCKET_LABEL = {"small": "小", "medium": "中", "large": "大"}
 
+# 引擎接入：超过此条数不做全量 DFS（防组合爆炸卡死）
+DEFAULT_DFS_MAX_BUFFER = 42
+DEFAULT_DFS_MAX_NODES = 300_000
+
 
 def _load_bucket_of():
     try:
@@ -109,12 +113,15 @@ def dfs_find_best_plan(
     spec: str,
     *,
     prefer_multi_bucket: bool = True,
+    max_buffer: int = DEFAULT_DFS_MAX_BUFFER,
+    max_nodes: int = DEFAULT_DFS_MAX_NODES,
 ) -> tuple[list[int], int, int] | None:
     """
     在 buffer 中深度优先搜索满足尾数与总重的最佳子集。
 
     尾数枚举 SPECS[spec]["counts"]（非固定 7–8），例如 15p→7/8 尾，20p→10/11 尾。
     总重须在 [4980, 5030] g；评分 |总重−5005|，缺区方案 +1.2。
+    buffer 超过 max_buffer 或访问节点超过 max_nodes 时返回 None（由调用方回退 FIFO）。
 
     返回 (选中下标列表, 尾数, 总重)；无解返回 None。
     """
@@ -125,13 +132,29 @@ def dfs_find_best_plan(
     counts = SPECS[spec]["counts"]
     min_count = min(counts)
 
-    if n < min_count:
+    if n < min_count or n > max_buffer:
         return None
+
+    # 预计算后缀升序列表，避免递归内反复 sort
+    suffix_sorted = [sorted(weights[i:]) for i in range(n + 1)]
+
+    def min_rest(start: int, need: int) -> int:
+        tail = suffix_sorted[start]
+        if len(tail) < need:
+            return TARGET_MAX + 1
+        return sum(tail[:need])
+
+    def max_rest(start: int, need: int) -> int:
+        tail = suffix_sorted[start]
+        if len(tail) < need:
+            return 0
+        return sum(tail[-need:])
 
     best_indices: list[int] | None = None
     best_count = 0
     best_weight = 0
     best_score = float("inf")
+    nodes = 0
 
     for target_count in counts:
         if n < target_count:
@@ -140,7 +163,10 @@ def dfs_find_best_plan(
         picked: list[int] = []
 
         def dfs(start: int, total: int) -> None:
-            nonlocal best_indices, best_count, best_weight, best_score
+            nonlocal best_indices, best_count, best_weight, best_score, nodes
+            nodes += 1
+            if nodes > max_nodes:
+                return
             need = target_count - len(picked)
             if need == 0:
                 if TARGET_MIN <= total <= TARGET_MAX:
@@ -157,22 +183,16 @@ def dfs_find_best_plan(
                 return
             if n - start < need:
                 return
-
-            rest_weights = [weights[i] for i in range(start, n)]
-            rest_weights.sort()
-            min_rest = sum(rest_weights[:need])
-            max_rest = sum(rest_weights[-need:])
-            if total + min_rest > TARGET_MAX:
+            if total + min_rest(start, need) > TARGET_MAX:
                 return
-            if total + max_rest < TARGET_MIN:
+            if total + max_rest(start, need) < TARGET_MIN:
                 return
 
             for i in range(start, n - need + 1):
                 w = weights[i]
                 new_total = total + w
-                if new_total > TARGET_MAX and i < n - 1:
-                    # 当前已超重且后面还有更重的可能，但剪枝已在 min_rest 处理
-                    pass
+                if new_total > TARGET_MAX:
+                    continue
                 picked.append(i)
                 dfs(i + 1, new_total)
                 picked.pop()
@@ -189,13 +209,33 @@ def dfs_find_best_from_items(
     spec: str,
     *,
     prefer_multi_bucket: bool = True,
+    max_buffer: int = DEFAULT_DFS_MAX_BUFFER,
+    max_nodes: int = DEFAULT_DFS_MAX_NODES,
 ) -> tuple[list[int], int, int] | None:
     """引擎接入：items 需有 weight、bucket 属性（Fish 或 BufferFish）。"""
     buffer = [
         BufferFish(getattr(it, "id", idx + 1), it.weight, it.bucket)
         for idx, it in enumerate(items)
     ]
-    return dfs_find_best_plan(buffer, spec, prefer_multi_bucket=prefer_multi_bucket)
+    return dfs_find_best_plan(
+        buffer,
+        spec,
+        prefer_multi_bucket=prefer_multi_bucket,
+        max_buffer=max_buffer,
+        max_nodes=max_nodes,
+    )
+
+
+def fifo_head_find_from_items(
+    items: list,
+    spec: str,
+) -> tuple[list[int], int, int] | None:
+    """引擎接入：小/中/大 FIFO 队头前缀组合（buffer 过大或 DFS 超限时回退）。"""
+    buffer = [
+        BufferFish(getattr(it, "id", idx + 1), it.weight, it.bucket)
+        for idx, it in enumerate(items)
+    ]
+    return fifo_head_find_plan(buffer, spec)
 
 
 def fifo_head_find_plan(

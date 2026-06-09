@@ -5,7 +5,7 @@
 @File : Scheduler_Engine.py
 @Author : 18k
 @Date : 2026/6/1 13:35
-@Description: 智能分拣引擎 — 使用随机种子批次，DFS 自由组合装盒，超时回流
+@Description: 智能分拣引擎 — 使用随机种子批次，DFS+FIFO 混合配盒，超时回流
 
 前端页面（经 web_server.py 暴露 API）：
   · index.html（/）统计面板：模块库存、成盒/尾料弹窗、趋势图、启停控制
@@ -104,6 +104,8 @@ _bucket_rules = _load_module("bucket_rules", _root / "plan" / "细分规则.py")
 _seed_gen = _load_module("fish_seed_gen", _root / "plan" / "随机种子生成.py")
 _depth_search = _load_module("depth_search", _root / "plan" / "深度搜索.py")
 dfs_find_best_from_items = _depth_search.dfs_find_best_from_items
+DFS_MAX_BUFFER = _depth_search.DEFAULT_DFS_MAX_BUFFER
+DFS_WINDOW_PER_BUCKET = 15
 
 BUCKET_RANGES = {}
 for spec in ALL_SPECS:
@@ -634,33 +636,27 @@ class SortingLanes:
 
 
 class BoxPlanner:
-    """作用：在规格料道快照上用 DFS 自由组合搜索封箱方案（plan/深度搜索.py）。
-    前端：index.html「完成箱数」与成盒明细；fifo_monitor.html 装箱工位封箱/填箱状态。
-    尾数约束来自 SPECS[spec]["counts"]；盒重目标统一 4980–5030 g。"""
+    """作用：DFS 自由组合 + FIFO 队头回退的混合封箱（plan/深度搜索.py）。
+    料道较小时 DFS 全局择优；料道积压时仅搜各路队头窗口，仍无解则 FIFO 队头枚举。
+    前端：index.html「完成箱数」；fifo_monitor.html 装箱工位。"""
 
     @staticmethod
-    def _spec_fish_buffer(lanes: SortingLanes, spec: str) -> list[Fish]:
-        """作用：合并某规格小/中/大三路料道为 DFS 搜索用的鱼列表快照。
-        前端：无直接 UI；find_plan 封箱搜索的内部数据准备。"""
-        buf: list[Fish] = []
+    def _dfs_search_buffer(lanes: SortingLanes, spec: str) -> list[Fish]:
+        """取 DFS 搜索窗口：总量小用全量，否则每路只取队头 DFS_WINDOW_PER_BUCKET 条。"""
+        q = lanes.queues[spec]
+        total = lanes.total_in_spec(spec)
+        if total <= DFS_MAX_BUFFER:
+            buf: list[Fish] = []
+            for bucket in BUCKETS:
+                buf.extend(q[bucket])
+            return buf
+        buf = []
         for bucket in BUCKETS:
-            buf.extend(lanes.queues[spec][bucket])
+            buf.extend(q[bucket][:DFS_WINDOW_PER_BUCKET])
         return buf
 
-    def find_plan(self, lanes: SortingLanes, spec: str) -> BoxPlan | None:
-        """作用：在该规格料道快照中 DFS 搜索最优成盒方案（4980–5030g，|总重−5005|最小）。
-        前端：封箱触发点；fifo_monitor 装箱工位「填箱中/封箱中」；index 成盒数累加。"""
-        if spec not in SPECS:
-            return None
-        if lanes.total_in_spec(spec) < min(SPECS[spec]["counts"]):
-            return None
-
-        buffer = self._spec_fish_buffer(lanes, spec)
-        result = dfs_find_best_from_items(buffer, spec)
-        if not result:
-            return None
-
-        indices, count, weight = result
+    @staticmethod
+    def _plan_from_indices(buffer: list[Fish], spec: str, indices: list[int], count: int, weight: int) -> BoxPlan:
         picked = [buffer[i] for i in indices]
         parts = {b: 0 for b in BUCKETS}
         for fish in picked:
@@ -672,6 +668,54 @@ class BoxPlanner:
             parts=parts,
             pick_ids=frozenset(f.id for f in picked),
         )
+
+    @staticmethod
+    def _fifo_head_plan(lanes: SortingLanes, spec: str) -> BoxPlan | None:
+        """FIFO 队头前缀枚举（O(尾数³×队深)，保证终止）。"""
+        q = lanes.queues[spec]
+        q_small, q_medium, q_large = q["small"], q["medium"], q["large"]
+        p_small = prefix_weights(q_small)
+        p_medium = prefix_weights(q_medium)
+        p_large = prefix_weights(q_large)
+        best: BoxPlan | None = None
+        best_score = float("inf")
+        for count in SPECS[spec]["counts"]:
+            for a in range(min(len(q_small), count) + 1):
+                for b in range(min(len(q_medium), count - a) + 1):
+                    c = count - a - b
+                    if c > len(q_large):
+                        continue
+                    weight = p_small[a] + p_medium[b] + p_large[c]
+                    if not (TARGET_MIN <= weight <= TARGET_MAX):
+                        continue
+                    score = abs(weight - TARGET_MID)
+                    if a == 0 or b == 0 or c == 0:
+                        score += 1.2
+                    if score < best_score:
+                        best_score = score
+                        best = BoxPlan(
+                            spec=spec,
+                            count=count,
+                            weight=weight,
+                            parts={"small": a, "medium": b, "large": c},
+                            pick_ids=None,
+                        )
+        return best
+
+    def find_plan(self, lanes: SortingLanes, spec: str) -> BoxPlan | None:
+        """DFS 窗口搜索；无解/过大时回退 FIFO 队头。前端：封箱触发点。"""
+        if spec not in SPECS:
+            return None
+        if lanes.total_in_spec(spec) < min(SPECS[spec]["counts"]):
+            return None
+
+        buffer = self._dfs_search_buffer(lanes, spec)
+        result = dfs_find_best_from_items(buffer, spec, max_buffer=DFS_MAX_BUFFER + 3)
+        if result:
+            indices, count, weight = result
+            return self._plan_from_indices(buffer, spec, indices, count, weight)
+
+        return self._fifo_head_plan(lanes, spec)
 
 
 UI_BUCKET = {"small": "light", "medium": "mid", "large": "heavy"}
