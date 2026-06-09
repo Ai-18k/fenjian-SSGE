@@ -243,7 +243,7 @@ class SimulationRunner:
     def get_state(
         self,
         since_carton: int = 0,
-        since_timeout_reflow: int = 0,
+        since_timeout_tail: int = 0,
         since_overflow_reflow: int = 0,
     ) -> dict:
         with self.lock:
@@ -256,7 +256,7 @@ class SimulationRunner:
                 }
             snap = self.engine.get_snapshot(
                 since_carton=since_carton,
-                since_timeout_reflow=since_timeout_reflow,
+                since_timeout_tail=since_timeout_tail,
                 since_overflow_reflow=since_overflow_reflow,
             )
             if self.running and not self.paused and not self.engine.finished:
@@ -418,6 +418,15 @@ def _remaining_from_disk(seed: int) -> dict:
             item["had_overflow"] = str(r.get("had_overflow") or "0") in ("1", "True", "true")
             dwell = r.get("dwell_time")
             item["dwell_time"] = int(dwell) if dwell not in (None, "") else None
+            first_in = r.get("first_in_time")
+            item["first_in_time"] = int(first_in) if first_in not in (None, "") else None
+            outbound = r.get("outbound_time")
+            item["outbound_time"] = int(outbound) if outbound not in (None, "") else None
+            lane_wait = r.get("lane_wait_s")
+            item["lane_wait_s"] = int(lane_wait) if lane_wait not in (None, "") else None
+            item["bucket"] = r.get("bucket") or ""
+            batch = r.get("batch_seed")
+            item["batch_seed"] = int(batch) if batch not in (None, "") else None
         else:
             trace = FishTrace(
                 fish_id=item["fish_id"],
@@ -543,12 +552,12 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/api/state":
             since_carton = max(0, int(qs.get("since_carton", ["0"])[0]))
-            since_timeout = max(0, int(qs.get("since_timeout_reflow", ["0"])[0]))
+            since_timeout = max(0, int(qs.get("since_timeout_tail", qs.get("since_timeout_reflow", ["0"]))[0]))
             since_overflow = max(0, int(qs.get("since_overflow_reflow", ["0"])[0]))
             return self._json(
                 RUNNER.get_state(
                     since_carton=since_carton,
-                    since_timeout_reflow=since_timeout,
+                    since_timeout_tail=since_timeout,
                     since_overflow_reflow=since_overflow,
                 )
             )
@@ -572,11 +581,11 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/remaining":
             seed = int(qs.get("seed", [DEFAULT_SEED])[0])
             state = RUNNER.get_state()
-            if state.get("seed") == seed and state.get("finished"):
+            if state.get("seed") == seed and state.get("remaining_fish"):
                 return self._json(
                     {
                         "seed": seed,
-                        "finished": True,
+                        "finished": bool(state.get("finished")),
                         "total": state.get("remaining_count", 0),
                         "fish": state.get("remaining_fish", []),
                     }
@@ -606,6 +615,13 @@ class Handler(BaseHTTPRequestHandler):
             report = ROOT_DIR / "data" / f"remaining_seed_{seed}.csv"
             if not report.is_file():
                 return self._json({"error": "尾料记录尚未生成"}, 404)
+            return self._file(report)
+
+        if path == "/api/timeout_tail.csv":
+            seed = int(qs.get("seed", [DEFAULT_SEED])[0])
+            report = ROOT_DIR / "data" / f"timeout_tail_seed_{seed}.csv"
+            if not report.is_file():
+                return self._json({"error": "超时尾料记录尚未生成"}, 404)
             return self._file(report)
 
         static = ROOT_DIR / "data" / path.lstrip("/")

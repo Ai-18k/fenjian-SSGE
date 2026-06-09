@@ -49,12 +49,14 @@ SPECS: dict[str, dict] = {
     "30p": {"range": (306, 365), "counts": (15, 16)},
     "35p": {"range": (266, 305), "counts": (17, 18, 19)},
     "40p": {"range": (231, 265), "counts": (20, 21)},
+    
     "45p": {"range": (211, 230), "counts": (22, 23)},
     "50p": {"range": (183, 210), "counts": (25, 26)},
     "60p": {"range": (153, 182), "counts": (30, 31)},
     "70p": {"range": (133, 152), "counts": (35, 36)},
     "80p": {"range": (116, 132), "counts": (40, 41)},
     "90p": {"range": (106, 115), "counts": (45, 46)},
+
     "100p": {"range": (96, 105), "counts": (50, 51)},
     "110p": {"range": (87, 95), "counts": (55, 56)},
     "120p": {"range": (80, 86), "counts": (60, 61)},
@@ -154,6 +156,8 @@ class FishTrace:
     outbound_time: int | None = None
     status: str = "pending"
     reflow_reasons: list[str] = field(default_factory=list)
+    bucket: str | None = None
+    lane_wait_s: int | None = None
 
     @property
     def dwell_time(self) -> int | None:
@@ -186,7 +190,7 @@ class Stats:
     cartons: int = 0
     outside_count: int = 0
     reflow_count: int = 0
-    timeout_reflow: int = 0
+    timeout_tail: int = 0
     overflow_reflow: int = 0
     unmatched_count: int = 0
     tail_count: int = 0
@@ -364,6 +368,7 @@ TAIL_STATUS_LABEL = {
     "unmatched_tail": "批末料道未配盒",
     "unmatched_reflow": "回流后未配盒",
     "unmatched_outside": "规格外",
+    "unmatched_timeout": "超时尾料",
 }
 
 
@@ -380,18 +385,20 @@ def carton_fish_detail(plan: BoxPlan) -> list[dict]:
     ]
 
 
-def describe_tail_trace(trace: FishTrace, end_tick: int | None = None) -> dict:
-    """作用：解析尾料未匹配原因（批末/回流/规格外）及超时、超容回流摘要。
+def describe_tail_trace(
+    trace: FishTrace,
+    end_tick: int | None = None,
+    batch_seed: int | None = None,
+) -> dict:
+    """作用：解析尾料未匹配原因（批末/回流/规格外/超时）及超容回流摘要。
     前端：index.html「尾料数据」弹窗各列；GET /api/remaining、/api/state.remaining_fish。"""
     reasons = list(trace.reflow_reasons)
-    had_timeout = "timeout" in reasons
+    had_timeout = trace.status == "unmatched_timeout" or "timeout" in reasons
     had_overflow = "overflow" in reasons
     status = trace.status or ""
     tail_cause = TAIL_STATUS_LABEL.get(status, status or "未知")
 
     reflow_parts: list[str] = []
-    if had_timeout:
-        reflow_parts.append("超时回流")
     if had_overflow:
         reflow_parts.append("超容回流")
     reflow_summary = "、".join(reflow_parts) if reflow_parts else "无"
@@ -409,6 +416,11 @@ def describe_tail_trace(trace: FishTrace, end_tick: int | None = None) -> dict:
         "had_timeout": had_timeout,
         "had_overflow": had_overflow,
         "dwell_time": dwell_time,
+        "first_in_time": trace.first_in_time,
+        "outbound_time": trace.outbound_time,
+        "bucket": trace.bucket or "",
+        "lane_wait_s": trace.lane_wait_s,
+        "batch_seed": batch_seed,
     }
 
 
@@ -451,8 +463,8 @@ class FishTracker:
         trace.status = "packed"
 
     def mark_reflow(self, fish: Fish, tick: int, reason: str) -> None:
-        """作用：标记鱼因超时或超容回流，记录原因（timeout/overflow）。
-        前端：两页「回流/尾料」分项；GET /api/state.timeout_reflow、overflow_reflow。"""
+        """作用：标记鱼因超容回流，记录原因（overflow）。
+        前端：两页「回流/尾料」分项；GET /api/state.overflow_reflow。"""
         trace = self.traces.get(fish.id)
         if trace is None:
             self.register(fish, tick, status="reflow")
@@ -460,6 +472,21 @@ class FishTracker:
         trace.rounds = fish.rounds
         trace.status = "reflow"
         trace.reflow_reasons.append(reason)
+
+    def mark_timeout_tail(self, fish: Fish, tick: int, lane_wait_s: int) -> None:
+        """作用：超时鱼直接记为尾料（不进回流），记录料道等待时长。
+        前端：index.html「尾料数据」「超时尾料」；GET /api/state.timeout_tail_log。"""
+        trace = self.traces.get(fish.id)
+        if trace is None:
+            self.register(fish, tick, status="unmatched_timeout")
+            trace = self.traces[fish.id]
+        trace.rounds = fish.rounds
+        trace.status = "unmatched_timeout"
+        trace.outbound_time = tick
+        trace.bucket = fish.bucket
+        trace.lane_wait_s = lane_wait_s
+        if trace not in self.unmatched:
+            self.unmatched.append(trace)
 
     def mark_unmatched(self, fish: Fish, status: str, tick: int | None = None) -> None:
         """作用：批末将未配盒鱼标为尾料（unmatched_tail/reflow/outside）。
@@ -472,7 +499,10 @@ class FishTracker:
         trace.status = status
         if tick is not None:
             trace.outbound_time = tick
-        self.unmatched.append(trace)
+        if fish.bucket and not trace.bucket:
+            trace.bucket = fish.bucket
+        if trace not in self.unmatched:
+            self.unmatched.append(trace)
 
     def save_report(self, path: Path) -> None:
         """作用：导出全批次鱼生命周期 CSV（run_report_seed_{seed}.csv）。
@@ -509,7 +539,11 @@ class FishTracker:
                     }
                 )
 
-    def remaining_records(self, end_tick: int | None = None) -> list[dict]:
+    def remaining_records(
+        self,
+        end_tick: int | None = None,
+        batch_seed: int | None = None,
+    ) -> list[dict]:
         """作用：汇总所有未成盒尾料的 JSON 记录（含原因与停留时长）。
         前端：index.html「尾料数据」弹窗；GET /api/remaining、/api/state.remaining_fish。"""
         return [
@@ -520,7 +554,7 @@ class FishTracker:
                 "rounds": t.rounds,
                 "status": t.status,
                 "reflow_reasons": list(t.reflow_reasons),
-                **describe_tail_trace(t, end_tick),
+                **describe_tail_trace(t, end_tick, batch_seed),
             }
             for t in sorted(self.unmatched, key=lambda x: x.fish_id)
         ]
@@ -614,7 +648,7 @@ class SortingLanes:
         return removed
 
     def divert_head(self, spec: str, bucket: str, tick: int, reason: str, tracker: FishTracker) -> Fish | None:
-        """作用：弹出料道队头鱼送入回流队列（防堵：超容或超时）。
+        """作用：弹出料道队头鱼送入回流队列（防堵：超容）。
         前端：两页回流统计；fifo_monitor 运行日志「回流」；GET /api/state 回流日志。"""
         lane = self.queues[spec][bucket]
         if not lane:
@@ -625,6 +659,24 @@ class SortingLanes:
         fish.enter_time = tick
         self.reflow.append(fish)
         tracker.mark_reflow(fish, tick, reason)
+        return fish
+
+    def discard_head_timeout(
+        self,
+        spec: str,
+        bucket: str,
+        tick: int,
+        lane_wait_s: int,
+        tracker: FishTracker,
+    ) -> Fish | None:
+        """作用：弹出料道队头超时鱼，直接记为尾料（不进回流队列）。
+        前端：index.html「超时尾料」；GET /api/state.timeout_tail_log。"""
+        lane = self.queues[spec][bucket]
+        if not lane:
+            return None
+        fish = lane.pop(0)
+        self._sync_head_enter_time(lane, tick)
+        tracker.mark_timeout_tail(fish, tick, lane_wait_s)
         return fish
 
     def iter_lanes(self):
@@ -777,7 +829,7 @@ class SchedulerEngine:
         self.finished = False
         self.events: list[dict] = []
         self.history: list[dict] = []
-        self.timeout_reflow_log: list[dict] = []
+        self.timeout_tail_log: list[dict] = []
         self.overflow_reflow_log: list[dict] = []
 
     def _sync_tick(self) -> int:
@@ -932,7 +984,7 @@ class SchedulerEngine:
         self,
         *,
         since_carton: int = 0,
-        since_timeout_reflow: int = 0,
+        since_timeout_tail: int = 0,
         since_overflow_reflow: int = 0,
     ) -> dict:
         """作用：生成引擎完整状态快照，供前端轮询（支持增量 since_* 游标）。
@@ -976,7 +1028,7 @@ class SchedulerEngine:
             for c in self.cartons[-8:]
         ]
         since_carton = max(0, min(since_carton, len(self.cartons)))
-        since_timeout_reflow = max(0, min(since_timeout_reflow, len(self.timeout_reflow_log)))
+        since_timeout_tail = max(0, min(since_timeout_tail, len(self.timeout_tail_log)))
         since_overflow_reflow = max(0, min(since_overflow_reflow, len(self.overflow_reflow_log)))
         carton_slice = self.cartons[since_carton:]
         carton_records = [
@@ -992,10 +1044,11 @@ class SchedulerEngine:
             }
             for idx, c in enumerate(carton_slice)
         ]
-        timeout_reflow_slice = self.timeout_reflow_log[since_timeout_reflow:]
+        timeout_tail_slice = self.timeout_tail_log[since_timeout_tail:]
         overflow_reflow_slice = self.overflow_reflow_log[since_overflow_reflow:]
-        remaining_fish = (
-            self.tracker.remaining_records(end_tick=self.tick) if self.finished else []
+        remaining_fish = self.tracker.remaining_records(
+            end_tick=self.tick,
+            batch_seed=self.seed,
         )
         demands = self.collect_demands()
         active_demands = [d for d in demands if d.get("active")]
@@ -1015,9 +1068,9 @@ class SchedulerEngine:
             "packed_fish": self.stats.packed_fish,
             "outside_count": self.stats.outside_count,
             "reflow_count": self.stats.reflow_count,
-            "timeout_reflow": self.stats.timeout_reflow,
+            "timeout_tail": self.stats.timeout_tail,
             "overflow_reflow": self.stats.overflow_reflow,
-            "unmatched_count": self.stats.unmatched_count,
+            "unmatched_count": len(self.tracker.unmatched),
             "tail_count": self.stats.tail_count,
             "reflow_queue": len(self.lanes.reflow),
             "outside_queue": len(self.lanes.outside),
@@ -1028,12 +1081,12 @@ class SchedulerEngine:
             "remaining_fish": remaining_fish,
             "remaining_count": len(remaining_fish),
             "events": self.events[-40:],
-            "timeout_reflow_log": timeout_reflow_slice,
-            "timeout_reflow_total": len(self.timeout_reflow_log),
+            "timeout_tail_log": timeout_tail_slice,
+            "timeout_tail_total": len(self.timeout_tail_log),
             "overflow_reflow_log": overflow_reflow_slice,
             "overflow_reflow_total": len(self.overflow_reflow_log),
             "snapshot_delta": (
-                since_carton > 0 or since_timeout_reflow > 0 or since_overflow_reflow > 0
+                since_carton > 0 or since_timeout_tail > 0 or since_overflow_reflow > 0
             ),
             "demands": demands,
             "active_demands": active_demands,
@@ -1089,8 +1142,8 @@ class SchedulerEngine:
         self.lanes.reflow = remaining
 
     def _anti_block(self) -> None:
-        """作用：防堵逻辑——料道超容或队首超时则弹出队头鱼回流。
-        前端：两页「回流/尾料」分项；fifo_monitor 日志；GET /api/state 超时/超容回流日志。"""
+        """作用：防堵逻辑——料道超容则弹出队头鱼回流；队首超时则直接记为尾料。
+        前端：两页「回流/尾料」分项；fifo_monitor 日志；GET /api/state 超时/超容日志。"""
         for spec in self.specs:
             if self.planner.find_plan(self.lanes, spec):
                 continue
@@ -1131,31 +1184,41 @@ class SchedulerEngine:
                     and self.tick - lane[0].enter_time >= self.move_timeout
                 ):
                     dwell = self.tick - lane[0].enter_time
-                    fish = self.lanes.divert_head(spec, bucket, self.tick, "timeout", self.tracker)
+                    trace = self.tracker.traces.get(lane[0].id)
+                    first_in = trace.first_in_time if trace else None
+                    fish = self.lanes.discard_head_timeout(
+                        spec, bucket, self.tick, dwell, self.tracker
+                    )
                     if fish:
-                        self.stats.reflow_count += 1
-                        self.stats.timeout_reflow += 1
-                        self.timeout_reflow_log.append(
+                        self.stats.timeout_tail += 1
+                        self.stats.tail_count += 1
+                        self.timeout_tail_log.append(
                             {
                                 "tick": self.tick,
                                 "fish_id": fish.id,
                                 "weight": fish.weight,
                                 "spec": spec,
                                 "bucket": bucket,
-                                "dwell_s": dwell,
+                                "first_in_time": first_in,
+                                "lane_wait_s": dwell,
+                                "system_dwell_s": (
+                                    self.tick - first_in if first_in is not None else None
+                                ),
                                 "threshold_s": self.move_timeout,
                                 "rounds": fish.rounds,
+                                "batch_seed": self.seed,
                             }
                         )
                         self._log(
-                            f"回流: #{fish.id} {spec.upper()}-{BUCKET_LABEL[bucket]} "
-                            f"超时 {dwell}s(阈值{self.move_timeout}s) → 第{fish.rounds}轮",
-                            kind="reflow",
+                            f"超时尾料: #{fish.id} {spec.upper()}-{BUCKET_LABEL[bucket]} "
+                            f"料道等待 {dwell}s(阈值{self.move_timeout}s) → 计入尾料",
+                            kind="timeout_tail",
                             reason="timeout",
                             fish_id=fish.id,
                             rounds=fish.rounds,
                             dwell_s=dwell,
                             threshold_s=self.move_timeout,
+                            first_in_time=first_in,
                         )
                     return
 
@@ -1225,25 +1288,75 @@ class SchedulerEngine:
                     "fish_id",
                     "weight",
                     "spec",
+                    "bucket",
                     "rounds",
                     "status",
                     "tail_cause",
                     "reflow_summary",
                     "had_timeout",
                     "had_overflow",
+                    "first_in_time",
+                    "outbound_time",
+                    "lane_wait_s",
                     "dwell_time",
+                    "batch_seed",
                     "reflow_reasons",
                 ],
             )
             writer.writeheader()
-            for row in self.tracker.remaining_records(end_tick=self.tick):
+            for row in self.tracker.remaining_records(
+                end_tick=self.tick,
+                batch_seed=self.seed,
+            ):
                 writer.writerow(
                     {
                         **row,
                         "had_timeout": int(row["had_timeout"]),
                         "had_overflow": int(row["had_overflow"]),
+                        "first_in_time": row["first_in_time"] if row["first_in_time"] is not None else "",
+                        "outbound_time": row["outbound_time"] if row["outbound_time"] is not None else "",
+                        "lane_wait_s": row["lane_wait_s"] if row["lane_wait_s"] is not None else "",
                         "dwell_time": row["dwell_time"] if row["dwell_time"] is not None else "",
+                        "batch_seed": row["batch_seed"] if row["batch_seed"] is not None else "",
                         "reflow_reasons": "|".join(row["reflow_reasons"]),
+                    }
+                )
+
+    def _save_timeout_tail_csv(self, path: Path) -> None:
+        """作用：导出超时尾料明细 CSV（timeout_tail_seed_{seed}.csv），便于分析优化。"""
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("w", newline="", encoding="utf-8-sig") as f:
+            writer = csv.DictWriter(
+                f,
+                fieldnames=[
+                    "fish_id",
+                    "weight",
+                    "spec",
+                    "bucket",
+                    "batch_seed",
+                    "first_in_time",
+                    "outbound_tick",
+                    "lane_wait_s",
+                    "system_dwell_s",
+                    "threshold_s",
+                    "rounds",
+                ],
+            )
+            writer.writeheader()
+            for row in self.timeout_tail_log:
+                writer.writerow(
+                    {
+                        "fish_id": row["fish_id"],
+                        "weight": row["weight"],
+                        "spec": row["spec"],
+                        "bucket": row["bucket"],
+                        "batch_seed": row["batch_seed"],
+                        "first_in_time": row["first_in_time"] if row["first_in_time"] is not None else "",
+                        "outbound_tick": row["tick"],
+                        "lane_wait_s": row["lane_wait_s"],
+                        "system_dwell_s": row["system_dwell_s"] if row["system_dwell_s"] is not None else "",
+                        "threshold_s": row["threshold_s"],
+                        "rounds": row["rounds"],
                     }
                 )
 
@@ -1334,15 +1447,18 @@ class SchedulerEngine:
         report_path = data_dir / f"run_report_seed_{self.seed}.csv"
         cartons_path = data_dir / f"cartons_seed_{self.seed}.csv"
         remaining_path = data_dir / f"remaining_seed_{self.seed}.csv"
+        timeout_tail_path = data_dir / f"timeout_tail_seed_{self.seed}.csv"
         self.tracker.save_report(report_path)
         self._save_cartons_csv(cartons_path)
         self._save_remaining_csv(remaining_path)
+        self._save_timeout_tail_csv(timeout_tail_path)
         self._event(
             "done",
             "批处理完成，报告已保存",
             report=str(report_path),
             cartons=str(cartons_path),
             remaining=str(remaining_path),
+            timeout_tail=str(timeout_tail_path),
         )
 
     def print_report(self) -> None:
@@ -1361,8 +1477,8 @@ class SchedulerEngine:
         print(f"  成功装盒数   : {self.stats.cartons}")
         print(f"  成功装箱鱼   : {self.stats.packed_fish}")
         print(f"  规格外       : {self.stats.outside_count}")
-        print(f"  回流总次数   : {self.stats.reflow_count}")
-        print(f"    超时回流   : {self.stats.timeout_reflow}")
+        print(f"  回流总次数   : {self.stats.reflow_count} (仅超容)")
+        print(f"    超时尾料   : {self.stats.timeout_tail}")
         print(f"    超容回流   : {self.stats.overflow_reflow}")
         print(f"  未匹配/尾料  : {self.stats.unmatched_count}")
         print(f"    批末尾料   : {self.stats.tail_count}")
@@ -1385,7 +1501,7 @@ class SchedulerEngine:
         print(f"  分拣规格   : {len(self.specs)} 个 ({', '.join(s.upper() for s in self.specs[:3])} …)")
         print(f"  模块批次   : A/B/C 共 {len(MODULE_SPECS)} 组")
         print(f"  盒重目标   : {TARGET_MIN}-{TARGET_MAX}g")
-        print(f"  移动超时   : {self.move_timeout}s (超出则回流重新入库)")
+        print(f"  移动超时   : {self.move_timeout}s (超出则直接记为尾料，不进回流)")
         print(f"  入料间隔   : {self.interval}s")
         print("-" * 60)
 

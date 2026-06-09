@@ -329,7 +329,7 @@ function syncServerReflowStats(state){
     outside_count:state.outside_count??0,
     reflow_queue:state.reflow_queue??0,
     unmatched_count:state.unmatched_count??0,
-    timeout_reflow:state.timeout_reflow??0,
+    timeout_tail:state.timeout_tail??0,
     overflow_reflow:state.overflow_reflow??0,
     finished:!!state.finished,
   };
@@ -340,7 +340,7 @@ function getReflowTailDisplay(){
   if(serverReflowStats){
     const s=serverReflowStats;
     if(s.finished)return s.reflow_count+s.unmatched_count;
-    return s.reflow_count+s.outside_count+s.reflow_queue;
+    return s.reflow_count+s.outside_count+s.reflow_queue+(s.unmatched_count||0);
   }
   return stats.outsideTail+stats.fifoReflow+stats.batchTail;
 }
@@ -350,10 +350,10 @@ function getReflowTailHint(){
     const s=serverReflowStats;
     if(s.finished){
       return '回流 '+s.reflow_count+' · 尾料 '+s.unmatched_count
-        +' · 超时 '+s.timeout_reflow+' / 超容 '+s.overflow_reflow+' · 后端';
+        +' · 超时尾料 '+s.timeout_tail+' / 超容 '+s.overflow_reflow+' · 后端';
     }
     return '回流 '+s.reflow_count+' · 规格外 '+s.outside_count
-      +' · 待入库 '+s.reflow_queue+' · 后端';
+      +' · 待入库 '+s.reflow_queue+' · 超时尾料 '+s.timeout_tail+' · 后端';
   }
   return '本地动画估算';
 }
