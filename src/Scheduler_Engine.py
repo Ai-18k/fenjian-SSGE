@@ -6,6 +6,26 @@
 @Author : 18k
 @Date : 2026/6/1 13:35
 @Description: 智能分拣引擎 — 使用随机种子批次，DFS 自由组合装盒，超时回流
+
+前端页面（经 web_server.py 暴露 API）：
+  · index.html（/）统计面板：模块库存、成盒/尾料弹窗、趋势图、启停控制
+  · fifo_monitor.html（/monitor）FIFO 动画：料道画布、需求广播、装箱工位、运行日志
+
+方法 → 前端模块速查：
+  批次/配置  load_or_generate_batch, normalize_enabled_specs, classify_bucket
+             → fifo_monitor「启用规格」+ GET /api/batch、/api/config
+  入料推进  process_one, record_to_fish, SortingLanes.enqueue
+             → 两页「累计来鱼」；fifo_monitor 逐条 spawn 动画
+  封箱      BoxPlanner.find_plan, _try_pack_all
+             → 两页「完成箱数」；fifo_monitor 装箱工位状态
+  回流防堵  _anti_block, _process_reflow_intake, divert_head
+             → 两页「回流/尾料」；fifo_monitor 规格外尾料箱
+  需求广播  collect_demands, _lane_demand_entry, _best_diagnostic_for_spec
+             → fifo_monitor「进料口广播」「需求地址列表」
+  状态快照  get_snapshot
+             → GET /api/state（两页轮询核心）
+  批末导出  finish_batch, save_report, _save_cartons_csv, _save_remaining_csv
+             → index「成盒数据」「尾料数据」「下载报告」+ 对应 CSV API
 """
 
 from __future__ import annotations
@@ -70,6 +90,8 @@ FISH_CACHE=[]
 
 
 def _load_module(name: str, path: Path):
+    """作用：动态加载 plan/ 下 Python 脚本（细分规则、种子生成、深度搜索）。
+    前端：无直接对应；为 classify_bucket、load_or_generate_batch、BoxPlanner 提供算法支撑。"""
     spec = importlib.util.spec_from_file_location(name, path)
     mod = importlib.util.module_from_spec(spec)
     sys.modules[name] = mod
@@ -108,6 +130,8 @@ for spec in ALL_SPECS:
 # ---------------------------------------------------------------------------
 @dataclass
 class Fish:
+    """作用：单条鱼的运行时实体（重量、规格、小中大分区、轮次）。
+    前端：fifo_monitor.html 画布鱼动画；/api/state 不直接暴露单鱼，经 modules/demands 间接体现。"""
     id: int
     weight: int
     spec: str | None = None
@@ -118,6 +142,8 @@ class Fish:
 
 @dataclass
 class FishTrace:
+    """作用：单条鱼全生命周期追踪记录（入料、封箱、回流、尾料状态）。
+    前端：index.html「尾料数据」弹窗、GET /api/remaining、GET /api/report 导出。"""
     fish_id: int
     weight: int
     spec: str | None
@@ -129,6 +155,8 @@ class FishTrace:
 
     @property
     def dwell_time(self) -> int | None:
+        """作用：计算鱼在系统中的停留时长（秒）。
+        前端：index.html 尾料弹窗 dwell_time 列；GET /api/remaining。"""
         if self.first_in_time is None:
             return None
         end = self.outbound_time if self.outbound_time is not None else self.first_in_time
@@ -137,6 +165,8 @@ class FishTrace:
 
 @dataclass
 class BoxPlan:
+    """作用：一次成功封箱的方案（规格、尾数、总重、小中大配比、入选鱼列表）。
+    前端：index.html「成盒数据」弹窗与趋势；GET /api/cartons、/api/state.recent_cartons。"""
     spec: str
     count: int
     weight: int
@@ -147,6 +177,8 @@ class BoxPlan:
 
 @dataclass
 class Stats:
+    """作用：引擎累计统计（入料、成盒、回流、规格外、尾料分项）。
+    前端：index.html 顶栏统计卡；fifo_monitor.html「累计来鱼/完成箱数/回流尾料」；GET /api/state。"""
     input_count: int = 0
     packed_fish: int = 0
     cartons: int = 0
@@ -162,7 +194,8 @@ class Stats:
 # 工具
 # ---------------------------------------------------------------------------
 def expand_spec_list(raw: str | list[str] | tuple[str, ...] | None) -> list[str]:
-    """展开规格列表；兼容 query 中 enabled_specs=a,b,c 被解析成单元素的情况。"""
+    """作用：展开规格列表；兼容 query 中 enabled_specs=a,b,c 被解析成单元素的情况。
+    前端：fifo_monitor.html「启用规格」勾选；POST /api/start 的 enabled_specs 参数解析。"""
     if raw is None:
         return []
     if isinstance(raw, str):
@@ -181,6 +214,8 @@ def expand_spec_list(raw: str | list[str] | tuple[str, ...] | None) -> list[str]
 def normalize_enabled_specs(
     enabled_specs: tuple[str, ...] | list[str] | None = None,
 ) -> tuple[str, ...]:
+    """作用：校验并规范化启用规格列表，无效时回退 DEFAULT_ENABLED_SPECS。
+    前端：fifo_monitor.html 规格芯片；GET /api/config.default_enabled_specs；POST /api/start。"""
     if not enabled_specs:
         return DEFAULT_ENABLED_SPECS
     valid = tuple(s for s in expand_spec_list(enabled_specs) if s in SPECS)
@@ -191,6 +226,8 @@ def classify_spec(
     weight: int,
     enabled: set[str] | None = None,
 ) -> str | None:
+    """作用：按克重归入规格（15p~150p）；未启用规格返回 None。
+    前端：fifo_monitor.html 入料路由与料道分配；index.html 模块库存按规格统计。"""
     for name, info in SPECS.items():
         lo, hi = info["range"]
         if lo <= weight <= hi:
@@ -201,10 +238,14 @@ def classify_spec(
 
 
 def enabled_specs_tag(enabled_specs: tuple[str, ...]) -> str:
+    """作用：将启用规格列表编码为文件名标签（如 15p-20p-25p）。
+    前端：无直接 UI；决定 data/fish_seed_{seed}_en_{tag}.csv 批次文件路径。"""
     return "-".join(enabled_specs)
 
 
 def batch_csv_path(seed: int, enabled_specs: tuple[str, ...]) -> Path:
+    """作用：根据种子与启用规格生成批次 CSV 路径。
+    前端：GET /api/batch 加载动画鱼序列；index/fifo_monitor 开始模拟前的批次源。"""
     tag = enabled_specs_tag(enabled_specs)
     return _root / "data" / f"fish_seed_{seed}_en_{tag}.csv"
 
@@ -213,7 +254,8 @@ def _batch_valid_for_enabled(
     records: list,
     enabled_specs: tuple[str, ...],
 ) -> bool:
-    """批次须仅含：启用规格内的鱼 + 真实规格外（<65 或 >700g）。"""
+    """作用：校验缓存批次是否匹配当前启用规格（仅含启用规格鱼 + 真规格外）。
+    前端：GET /api/batch 命中缓存前的校验；fifo_monitor 切换启用规格后重载批次。"""
     enabled_set = set(enabled_specs)
     for r in records:
         if r.outside:
@@ -229,10 +271,14 @@ def _batch_valid_for_enabled(
 
 
 def classify_bucket(spec: str, weight: int) -> str:
+    """作用：将鱼按克重归入小/中/大（small/medium/large）料道。
+    前端：fifo_monitor.html 三路料道动画与克数标注；GET /api/config.bucket_ranges。"""
     return _bucket_rules.bucket_of(weight, BUCKET_RANGES[spec])
 
 
 def prefix_weights(fish_list: list[Fish]) -> list[int]:
+    """作用：计算料道鱼重量前缀和，用于快速枚举封箱组合重量。
+    前端：无直接 UI；支撑 fifo_monitor「需求地址」偏轻/偏重诊断与 collect_demands。"""
     p = [0]
     for f in fish_list:
         p.append(p[-1] + f.weight)
@@ -240,6 +286,8 @@ def prefix_weights(fish_list: list[Fish]) -> list[int]:
 
 
 def lane_capacity(spec: str, cap_factor: int = DEFAULT_CAP_FACTOR) -> int:
+    """作用：计算单条料道（小/中/大之一）的最大容量。
+    前端：fifo_monitor.html 料道 queue/cap 标注；index.html 模块库存 capacity 字段。"""
     return math.ceil(max(SPECS[spec]["counts"]) * cap_factor / 3)
 
 
@@ -248,6 +296,8 @@ def record_to_fish(
     tick: int,
     enabled: set[str] | None = None,
 ) -> Fish:
+    """作用：将批次 CSV 记录转为运行时 Fish 对象（含规格与小中大分区）。
+    前端：process_one 每入料一条驱动 fifo_monitor 动画 spawn 与 index 入料计数。"""
     if record.outside:
         spec = None
     elif enabled is not None:
@@ -266,6 +316,8 @@ def record_to_fish(
 
 
 def _load_batch_csv(csv_path: Path) -> list:
+    """作用：从磁盘读取 fish_seed CSV 为 FishRecord 列表。
+    前端：GET /api/batch 读缓存批次；fifo_monitor.html loadBatch() 拉取鱼序列。"""
     records = []
     with csv_path.open(encoding="utf-8-sig") as f:
         for row in csv.DictReader(f):
@@ -286,7 +338,8 @@ def load_or_generate_batch(
     csv_path: Path | None = None,
     enabled_specs: tuple[str, ...] | list[str] | None = None,
 ) -> list:
-    """按启用规格生成/加载批次：只在启用重量段内随机，约 1% 为 <65 或 >700g 真规格外。"""
+    """作用：按启用规格生成或加载种子批次（约 1% 真规格外 <65g 或 >700g）。
+    前端：GET /api/batch；fifo_monitor.html「加载批次」；index.html 开始模拟前预生成 data/fish_seed_*.csv。"""
     enabled = normalize_enabled_specs(enabled_specs)
     csv_path = csv_path or batch_csv_path(seed, enabled)
     if csv_path.exists():
@@ -313,6 +366,8 @@ TAIL_STATUS_LABEL = {
 
 
 def carton_fish_detail(plan: BoxPlan) -> list[dict]:
+    """作用：将封箱方案展开为每条鱼的 id/weight/bucket 明细列表。
+    前端：index.html「成盒数据」弹窗鱼明细；GET /api/cartons、/api/state.carton_records.fish。"""
     return [
         {
             "id": f.id,
@@ -324,7 +379,8 @@ def carton_fish_detail(plan: BoxPlan) -> list[dict]:
 
 
 def describe_tail_trace(trace: FishTrace, end_tick: int | None = None) -> dict:
-    """尾料未匹配原因：批末未配盒 / 回流未再入盒 / 规格外，及是否曾超时、超容回流。"""
+    """作用：解析尾料未匹配原因（批末/回流/规格外）及超时、超容回流摘要。
+    前端：index.html「尾料数据」弹窗各列；GET /api/remaining、/api/state.remaining_fish。"""
     reasons = list(trace.reflow_reasons)
     had_timeout = "timeout" in reasons
     had_overflow = "overflow" in reasons
@@ -358,11 +414,18 @@ def describe_tail_trace(trace: FishTrace, end_tick: int | None = None) -> dict:
 # 追踪器
 # ---------------------------------------------------------------------------
 class FishTracker:
+    """作用：管理全批次每条鱼的追踪状态（入队、封箱、回流、尾料）。
+    前端：GET /api/report 全量追踪；index.html「尾料数据」；fifo_monitor 回流/尾料统计分项。"""
+
     def __init__(self) -> None:
+        """作用：初始化空追踪表。
+        前端：引擎创建时调用，无直接 UI。"""
         self.traces: dict[int, FishTrace] = {}
         self.unmatched: list[FishTrace] = []
 
     def register(self, fish: Fish, tick: int, status: str = "queued") -> None:
+        """作用：登记鱼首次入系统或更新轮次/状态（入队、规格外等）。
+        前端：入料时隐式更新；GET /api/report 的 status 字段来源。"""
         if fish.id not in self.traces:
             self.traces[fish.id] = FishTrace(
                 fish_id=fish.id,
@@ -378,12 +441,16 @@ class FishTracker:
             trace.status = status
 
     def mark_packed(self, fish: Fish, tick: int) -> None:
+        """作用：标记鱼已成功装入成盒并记录出站时间。
+        前端：index.html「完成箱数/装箱鱼」；GET /api/cartons 的 fish_ids。"""
         trace = self.traces[fish.id]
         trace.rounds = fish.rounds
         trace.outbound_time = tick
         trace.status = "packed"
 
     def mark_reflow(self, fish: Fish, tick: int, reason: str) -> None:
+        """作用：标记鱼因超时或超容回流，记录原因（timeout/overflow）。
+        前端：两页「回流/尾料」分项；GET /api/state.timeout_reflow、overflow_reflow。"""
         trace = self.traces.get(fish.id)
         if trace is None:
             self.register(fish, tick, status="reflow")
@@ -393,6 +460,8 @@ class FishTracker:
         trace.reflow_reasons.append(reason)
 
     def mark_unmatched(self, fish: Fish, status: str, tick: int | None = None) -> None:
+        """作用：批末将未配盒鱼标为尾料（unmatched_tail/reflow/outside）。
+        前端：index.html「尾料数据」；fifo_monitor「规格外尾料箱」；GET /api/remaining。"""
         trace = self.traces.get(fish.id)
         if trace is None:
             self.register(fish, tick or 0, status=status)
@@ -404,6 +473,8 @@ class FishTracker:
         self.unmatched.append(trace)
 
     def save_report(self, path: Path) -> None:
+        """作用：导出全批次鱼生命周期 CSV（run_report_seed_{seed}.csv）。
+        前端：index.html「下载报告」按钮；GET /api/report。"""
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("w", newline="", encoding="utf-8-sig") as f:
             writer = csv.DictWriter(
@@ -437,6 +508,8 @@ class FishTracker:
                 )
 
     def remaining_records(self, end_tick: int | None = None) -> list[dict]:
+        """作用：汇总所有未成盒尾料的 JSON 记录（含原因与停留时长）。
+        前端：index.html「尾料数据」弹窗；GET /api/remaining、/api/state.remaining_fish。"""
         return [
             {
                 "fish_id": t.fish_id,
@@ -455,7 +528,12 @@ class FishTracker:
 # 料道 & 装箱
 # ---------------------------------------------------------------------------
 class SortingLanes:
+    """作用：管理全部规格的小/中/大料道队列、回流队列与规格外队列。
+    前端：fifo_monitor.html 料道画布与库存可视化；index.html A/B/C 模块库存表。"""
+
     def __init__(self, specs: tuple[str, ...] = DEMO_SPECS):
+        """作用：按启用规格初始化空料道结构。
+        前端：POST /api/start 创建引擎时；GET /api/state.modules 库存数据源。"""
         self.specs = specs
         self.queues: dict[str, dict[str, list[Fish]]] = {
             spec: {b: [] for b in BUCKETS} for spec in specs
@@ -464,11 +542,15 @@ class SortingLanes:
         self.reflow: list[Fish] = []
 
     def _put_in_lane(self, fish: Fish, tick: int) -> str:
+        """作用：将鱼放入对应规格+小中大料道队尾。
+        前端：fifo_monitor.html 鱼入料道动画；index.html 模块 small/medium/large 计数。"""
         fish.enter_time = tick
         self.queues[fish.spec][fish.bucket].append(fish)
         return fish.bucket
 
     def enqueue(self, fish: Fish, tick: int, tracker: FishTracker) -> str:
+        """作用：入料主入口：规格外进 outside 队列，否则进对应料道。
+        前端：fifo_monitor 正常入料/规格外尾料轨；两页 outside_count 统计。"""
         if fish.spec is None or fish.spec not in self.queues:
             fish.enter_time = tick
             self.outside.append(fish)
@@ -479,6 +561,8 @@ class SortingLanes:
         return bucket
 
     def try_enqueue_reflow(self, fish: Fish, tick: int, tracker: FishTracker) -> bool:
+        """作用：尝试将回流鱼重新放入料道（料道未满则成功）。
+        前端：GET /api/state.reflow_queue 待入库数；fifo_monitor 回流后再次入道动画。"""
         if fish.spec is None or fish.spec not in self.queues:
             return False
         lane = self.queues[fish.spec][fish.bucket]
@@ -489,15 +573,20 @@ class SortingLanes:
         return True
 
     def total_in_spec(self, spec: str) -> int:
+        """作用：统计某规格三路料道鱼总数。
+        前端：index.html 模块库存 total 列；封箱前置条件判断。"""
         return sum(len(self.queues[spec][b]) for b in BUCKETS)
 
     @staticmethod
     def _sync_head_enter_time(lane: list[Fish], tick: int) -> None:
-        """队头变更后重置队头计时，超时只统计「担任队头」的等待时间。"""
+        """作用：队头变更后重置队头 enter_time，超时只统计担任队头的等待时间。
+        前端：fifo_monitor「队首超时」控制项；GET /api/state 超时回流日志。"""
         if lane:
             lane[0].enter_time = tick
 
     def remove_plan(self, plan: BoxPlan, tick: int, tracker: FishTracker) -> list[Fish]:
+        """作用：按封箱方案从料道移除对应鱼（DFS 按 ID 或 FIFO 按数量）。
+        前端：fifo_monitor 装箱工位出料动画；index 成盒数据 fish_ids。"""
         removed: list[Fish] = []
         if plan.pick_ids:
             targets = set(plan.pick_ids)
@@ -523,6 +612,8 @@ class SortingLanes:
         return removed
 
     def divert_head(self, spec: str, bucket: str, tick: int, reason: str, tracker: FishTracker) -> Fish | None:
+        """作用：弹出料道队头鱼送入回流队列（防堵：超容或超时）。
+        前端：两页回流统计；fifo_monitor 运行日志「回流」；GET /api/state 回流日志。"""
         lane = self.queues[spec][bucket]
         if not lane:
             return None
@@ -535,36 +626,30 @@ class SortingLanes:
         return fish
 
     def iter_lanes(self):
+        """作用：迭代所有启用规格的 (spec, bucket, lane) 三元组。
+        前端：无直接 UI；批末扫尾 mark_unmatched 时遍历料道。"""
         for spec in self.specs:
             for bucket in BUCKETS:
                 yield spec, bucket, self.queues[spec][bucket]
 
 
 class BoxPlanner:
-    """在规格料道快照上用 DFS 自由组合搜索封箱方案（plan/深度搜索.py）。
-
-    尾数约束来自 SPECS[spec]["counts"]，按规格不同而不同，例如：
-      · 15p → (7, 8)
-      · 20p → (10, 11)
-      · 25p → (12, 13, 14)
-    盒重目标统一为 4980–5030 g。
-    """
+    """作用：在规格料道快照上用 DFS 自由组合搜索封箱方案（plan/深度搜索.py）。
+    前端：index.html「完成箱数」与成盒明细；fifo_monitor.html 装箱工位封箱/填箱状态。
+    尾数约束来自 SPECS[spec]["counts"]；盒重目标统一 4980–5030 g。"""
 
     @staticmethod
     def _spec_fish_buffer(lanes: SortingLanes, spec: str) -> list[Fish]:
+        """作用：合并某规格小/中/大三路料道为 DFS 搜索用的鱼列表快照。
+        前端：无直接 UI；find_plan 封箱搜索的内部数据准备。"""
         buf: list[Fish] = []
         for bucket in BUCKETS:
             buf.extend(lanes.queues[spec][bucket])
         return buf
 
     def find_plan(self, lanes: SortingLanes, spec: str) -> BoxPlan | None:
-        """在该规格料道快照中搜索最优成盒方案。
-
-        前置：三区鱼总数 ≥ min(SPECS[spec]["counts"])。
-        搜索：对 SPECS[spec]["counts"] 中每个合法尾数做 DFS 子集枚举（非 FIFO 队头顺序），
-              总重须落在 [TARGET_MIN, TARGET_MAX]，取得分 |总重−5005| 最小者。
-        返回：BoxPlan（含 pick_ids，remove_plan 按鱼 ID 从料道移除）。
-        """
+        """作用：在该规格料道快照中 DFS 搜索最优成盒方案（4980–5030g，|总重−5005|最小）。
+        前端：封箱触发点；fifo_monitor 装箱工位「填箱中/封箱中」；index 成盒数累加。"""
         if spec not in SPECS:
             return None
         if lanes.total_in_spec(spec) < min(SPECS[spec]["counts"]):
@@ -593,6 +678,8 @@ UI_BUCKET = {"small": "light", "medium": "mid", "large": "heavy"}
 
 
 def module_of_spec(spec: str) -> str:
+    """作用：将规格映射到模块 A/B/C。
+    前端：fifo_monitor.html 画布三模块分区与需求地址前缀（A/15p/light）。"""
     for mod, spec_list in MODULE_SPECS.items():
         if spec in spec_list:
             return mod
@@ -600,11 +687,16 @@ def module_of_spec(spec: str) -> str:
 
 
 def lane_address(mod: str, spec: str, bucket: str) -> str:
+    """作用：生成料道需求地址字符串（如 B/50p/mid）。
+    前端：fifo_monitor「进料口广播」「需求地址列表」中的 address 字段。"""
     ui = UI_BUCKET.get(bucket, bucket)
     return f"{mod}/{spec}/{ui}"
 
 
 class SchedulerEngine:
+    """作用：智能分拣仿真主引擎，串联入料→料道→封箱→回流→批末导出。
+    前端：web_server SimulationRunner 后台驱动；两页通过 GET /api/state 读取其快照。"""
+
     def __init__(
         self,
         batch_records: list | None = None,
@@ -616,6 +708,8 @@ class SchedulerEngine:
         verbose: bool = False,
         log_every: int = 500,
     ):
+        """作用：初始化引擎（批次、料道、追踪器、统计）；POST /api/start 时创建。
+        前端：index/fifo_monitor「开始模拟」；控制种子、条数、超时、启用规格、料道容量倍率。"""
         self.seed = seed
         self.interval = interval
         self.specs = specs
@@ -643,7 +737,8 @@ class SchedulerEngine:
         self.overflow_reflow_log: list[dict] = []
 
     def _sync_tick(self) -> int:
-        """用自引擎创建以来的真实经过时间（秒）更新 tick，与入料条数解耦；暂停期间不计入。"""
+        """作用：用真实经过时间（秒）更新 tick，与入料条数解耦；暂停期间冻结。
+        前端：GET /api/state.tick；fifo_monitor 需求广播「后端 t=」；超时回流阈值计时。"""
         now = time.monotonic()
         if self._paused_at is not None:
             now = self._paused_at
@@ -651,21 +746,29 @@ class SchedulerEngine:
         return self.tick
 
     def pause_clock(self) -> None:
+        """作用：暂停仿真时钟（冻结 tick 增长）。
+        前端：两页「暂停」按钮 POST /api/pause。"""
         if self._paused_at is None:
             self._paused_at = time.monotonic()
 
     def resume_clock(self) -> None:
+        """作用：恢复仿真时钟（补偿暂停期间时长）。
+        前端：两页「继续」按钮 POST /api/resume。"""
         if self._paused_at is not None:
             self._time_origin += time.monotonic() - self._paused_at
             self._paused_at = None
 
     def _event(self, kind: str, msg: str, **extra) -> None:
+        """作用：追加运行时事件（入料/封箱/回流/完成）到环形缓冲。
+        前端：GET /api/state.events（最近 40 条）；可供日志面板扩展。"""
         evt = {"tick": self.tick, "kind": kind, "msg": msg, **extra}
         self.events.append(evt)
         if len(self.events) > 300:
             self.events.pop(0)
 
     def _best_diagnostic_for_spec(self, spec: str) -> dict:
+        """作用：诊断某规格封箱状态（可装/不足/偏轻/偏重/接近）。
+        前端：fifo_monitor「需求地址」reason 字段（如「偏轻」「可装」）；装箱工位待装箱判断。"""
         if spec not in self.specs:
             return {"kind": "off", "short": "未启用", "need_bucket": None, "need_count": 0}
         q = self.lanes.queues[spec]
@@ -710,6 +813,8 @@ class SchedulerEngine:
         return {"kind": "good", "short": "接近", "need_bucket": None, "need_count": 0}
 
     def _lane_demand_entry(self, mod_key: str, spec: str, bucket: str) -> dict:
+        """作用：生成单路料道（模块/规格/小中大）的需求条目（优先级、缺鱼数、原因）。
+        前端：fifo_monitor「需求地址列表」单张卡片；GET /api/state.demands 每路一条。"""
         ui_bucket = UI_BUCKET[bucket]
         address = lane_address(mod_key, spec, bucket)
         base = {
@@ -769,6 +874,8 @@ class SchedulerEngine:
         }
 
     def collect_demands(self) -> list[dict]:
+        """作用：汇总全部 54 路料道需求（3 模块 × 18 规格 × 小中大），按优先级排序。
+        前端：fifo_monitor「进料口广播」「需求地址列表」「活跃需求」计数；GET /api/state.demands。"""
         items: list[dict] = []
         for mod_key, spec_list in MODULE_SPECS.items():
             for spec in spec_list:
@@ -784,6 +891,8 @@ class SchedulerEngine:
         since_timeout_reflow: int = 0,
         since_overflow_reflow: int = 0,
     ) -> dict:
+        """作用：生成引擎完整状态快照，供前端轮询（支持增量 since_* 游标）。
+        前端：GET /api/state 核心数据源；index 统计卡/库存/趋势；fifo_monitor 全页同步。"""
         modules: dict[str, dict] = {}
         for mod, spec_list in MODULE_SPECS.items():
             modules[mod] = {}
@@ -892,12 +1001,16 @@ class SchedulerEngine:
         }
 
     def _log(self, msg: str, force: bool = False, kind: str = "info", **extra) -> None:
+        """作用：写引擎日志（verbose 时打印终端，非 info 时记入 events）。
+        前端：CLI 调试输出；GET /api/state.events 中间接入 fifo_monitor 运行日志可扩展。"""
         if kind != "info" or force:
             self._event(kind, msg, **extra)
         if self.verbose or force:
             print(f"[t={self.tick:05d}s] {msg}")
 
     def _try_pack_all(self) -> int:
+        """作用：遍历启用规格尝试 DFS 封箱，成功则移除料道鱼并累加统计。
+        前端：两页「完成箱数」；fifo_monitor 装箱工位；index 成盒数据与趋势图。"""
         packed = 0
         for spec in self.specs:
             while True:
@@ -923,6 +1036,8 @@ class SchedulerEngine:
         return packed
 
     def _process_reflow_intake(self) -> None:
+        """作用：每步将回流队列中的鱼尝试重新放入料道。
+        前端：GET /api/state.reflow_queue 待入库数；fifo_monitor 回流鱼二次入道。"""
         remaining: list[Fish] = []
         for fish in self.lanes.reflow:
             if not self.lanes.try_enqueue_reflow(fish, self.tick, self.tracker):
@@ -930,6 +1045,8 @@ class SchedulerEngine:
         self.lanes.reflow = remaining
 
     def _anti_block(self) -> None:
+        """作用：防堵逻辑——料道超容或队首超时则弹出队头鱼回流。
+        前端：两页「回流/尾料」分项；fifo_monitor 日志；GET /api/state 超时/超容回流日志。"""
         for spec in self.specs:
             if self.planner.find_plan(self.lanes, spec):
                 continue
@@ -999,6 +1116,8 @@ class SchedulerEngine:
                     return
 
     def _record_history(self) -> None:
+        """作用：按 tick 采样入料/成盒/回流历史点，供趋势图使用。
+        前端：index.html 运行趋势折线图；GET /api/state.history。"""
         step = max(1, self.log_every // 5)
         if self.tick % step != 0 and not self.finished:
             return
@@ -1015,6 +1134,8 @@ class SchedulerEngine:
             self.history.pop(0)
 
     def _save_cartons_csv(self, path: Path) -> None:
+        """作用：导出成盒明细 CSV（cartons_seed_{seed}.csv）。
+        前端：index.html「成盒数据」导出；GET /api/cartons.csv。"""
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("w", newline="", encoding="utf-8-sig") as f:
             writer = csv.DictWriter(
@@ -1050,6 +1171,8 @@ class SchedulerEngine:
                 )
 
     def _save_remaining_csv(self, path: Path) -> None:
+        """作用：导出未成盒尾料 CSV（remaining_seed_{seed}.csv）。
+        前端：index.html「尾料数据」导出；GET /api/remaining.csv。"""
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("w", newline="", encoding="utf-8-sig") as f:
             writer = csv.DictWriter(
@@ -1081,11 +1204,8 @@ class SchedulerEngine:
                 )
 
     def process_one(self) -> bool:
-        """推进仿真一个时间步：处理批次中下一条鱼，并驱动封箱与防堵回流。
-
-        单步流程：入料 → 回流队列再入料道 → 尝试封箱 → 防堵（超容/超时弹出队头）。
-        批次游标 _cursor 耗尽时返回 False，否则返回 True。
-        """
+        """作用：推进仿真一步——入料→回流再入道→封箱→防堵；游标耗尽返回 False。
+        前端：web_server 后台线程按 speed 调用；两页 input_count；fifo_monitor 逐条 spawn。"""
         if self._cursor >= self.total_fish:
             return False
 
@@ -1140,6 +1260,8 @@ class SchedulerEngine:
         return True
 
     def finish_batch(self) -> None:
+        """作用：批末扫尾（继续封箱+回流）→标记尾料→写 CSV 报告→finished=true。
+        前端：两页批末状态；index「成盒/尾料/报告」；fifo_monitor 快速跑完与尾料箱最终数。"""
         for _ in range(5000):
             self._sync_tick()
             before = self.stats.cartons
@@ -1180,6 +1302,8 @@ class SchedulerEngine:
         )
 
     def print_report(self) -> None:
+        """作用：在终端打印批末汇总（入料、成盒、回流、尾料、盒重分布）。
+        前端：无 Web UI；CLI 直接运行 python Scheduler_Engine.py 时输出。"""
         rounds_dist: dict[int, int] = {}
         for t in self.tracker.traces.values():
             rounds_dist[t.rounds] = rounds_dist.get(t.rounds, 0) + 1
@@ -1210,6 +1334,8 @@ class SchedulerEngine:
 
 
     def run(self, realtime: bool = True) -> None:
+        """作用：循环 process_one 直至批次耗尽，再 finish_batch 并打印报告。
+        前端：无 Web 直接调用；CLI 入口与 run_demo 使用；Web 版由 web_server 线程驱动。"""
         print("智能分拣引擎启动")
         print(f"  批次       : fish_seed_{self.seed}.csv ({self.total_fish} 条)")
         print(f"  分拣规格   : {len(self.specs)} 个 ({', '.join(s.upper() for s in self.specs[:3])} …)")
@@ -1239,6 +1365,8 @@ def run_demo(
     verbose: bool = False,
     csv_path: Path | None = None,
 ) -> SchedulerEngine:
+    """作用：快捷封装：加载批次→创建引擎→跑完全程→返回引擎实例。
+    前端：无 Web UI；供脚本/测试一次性跑完，等价于 index「快速跑完」后端逻辑。"""
     records = load_or_generate_batch(seed=seed, total=total, csv_path=csv_path)
     engine = SchedulerEngine(
         batch_records=records,
@@ -1252,6 +1380,8 @@ def run_demo(
 
 
 def main() -> None:
+    """作用：CLI 入口，解析命令行参数并启动引擎独立运行（不经过 web_server）。
+    前端：无；命令行 python src/Scheduler_Engine.py --seed 42 --fast。"""
     parser = argparse.ArgumentParser(description="智能分拣引擎（25000 条种子批次）")
     parser.add_argument("--seed", type=int, default=DEFAULT_SEED, help="随机种子")
     parser.add_argument("-n", "--total", type=int, default=DEFAULT_TOTAL, help="入料总条数")
