@@ -122,7 +122,10 @@ _root = Path(__file__).resolve().parent.parent
 _bucket_rules = _load_module("bucket_rules", _root / "plan" / "细分规则.py")
 _seed_gen = _load_module("fish_seed_gen", _root / "plan" / "随机种子生成.py")
 _depth_search = _load_module("depth_search", _root / "plan" / "深度搜索.py")
+_demand_calc = _load_module("demand_calc", _root / "plan" / "计算需求.py")
 dfs_find_best_from_items = _depth_search.dfs_find_best_from_items
+BoxDemandCalculator = _demand_calc.BoxDemandCalculator
+_intersect_interval = _demand_calc.intersect_interval
 DFS_MAX_BUFFER = _depth_search.DEFAULT_DFS_MAX_BUFFER
 DFS_WINDOW_PER_BUCKET = 15
 
@@ -144,6 +147,57 @@ for spec in ALL_SPECS:
             medium=(t1 + 1, t2),
             large=(t2 + 1, hi),
         )
+
+
+def bucket_weight_range(spec: str, bucket: str) -> tuple[int, int]:
+    br = BUCKET_RANGES[spec]
+    if bucket == "small":
+        return br.small
+    if bucket == "medium":
+        return br.medium
+    return br.large
+
+
+def weight_in_ranges(
+    weight: int,
+    ranges: list[tuple[int, int]] | list[list[int]],
+) -> bool:
+    for r in ranges:
+        lo, hi = int(r[0]), int(r[1])
+        if lo <= weight <= hi:
+            return True
+    return False
+
+
+def spec_inventory_weights(lanes: "SortingLanes", spec: str) -> list[int]:
+    weights: list[int] = []
+    if spec in lanes.queues:
+        for b in BUCKETS:
+            weights.extend(f.weight for f in lanes.queues[spec][b])
+    weights.extend(f.weight for f in lanes.storage if f.spec == spec)
+    return weights
+
+
+def lane_demand_weight_ranges(
+    lanes: "SortingLanes",
+    spec: str,
+    bucket: str,
+) -> list[tuple[int, int]]:
+    """料道广播用的重量区间：规格动态需求 ∩ 小/中/大分区区间。"""
+    bucket_rng = bucket_weight_range(spec, bucket)
+    weights = spec_inventory_weights(lanes, spec)
+    if not weights:
+        return [bucket_rng]
+    demand = BoxDemandCalculator(spec, weights).calc()
+    spec_ranges = demand.next_fish_ranges
+    if not spec_ranges:
+        return [bucket_rng]
+    merged: list[tuple[int, int]] = []
+    for rlo, rhi in spec_ranges:
+        hit = _intersect_interval((rlo, rhi), bucket_rng)
+        if hit:
+            merged.append(hit)
+    return merged if merged else [bucket_rng]
 
 
 # ---------------------------------------------------------------------------
@@ -620,7 +674,7 @@ class SortingLanes:
         self.storage_capacity = DEFAULT_STORAGE_CAPACITY
 
     def storage_for_spec(self, spec: str) -> list[Fish]:
-        """作用：取暂存箱内某规格的鱼（FIFO 顺序，优先配盒）。
+        """作用：取暂存箱内某规格的鱼（入箱仍 FIFO append；出库按需求区间匹配）。
         前端：GET /api/state.storage_box.by_spec。"""
         return [f for f in self.storage if f.spec == spec]
 
@@ -628,9 +682,52 @@ class SortingLanes:
         return len(self.storage)
 
     def bucket_fish(self, spec: str, bucket: str) -> list[Fish]:
-        """作用：暂存箱 + 料道合并视图，暂存鱼排在前面优先消耗。"""
-        stored = [f for f in self.storage if f.spec == spec and f.bucket == bucket]
-        return stored + self.queues[spec][bucket]
+        """作用：料道 FIFO 视图（暂存鱼经需求匹配出库后进入料道，不在此合并）。"""
+        return self.queues[spec][bucket]
+
+    def pick_storage_matching(
+        self,
+        spec: str,
+        bucket: str,
+        weight_ranges: list[tuple[int, int]],
+        limit: int,
+    ) -> list[Fish]:
+        """按广播需求重量区间从暂存箱取鱼（非队头顺序，优先等待最久者）。"""
+        if limit <= 0:
+            return []
+        candidates = [
+            f
+            for f in self.storage
+            if f.spec == spec
+            and f.bucket == bucket
+            and weight_in_ranges(f.weight, weight_ranges)
+        ]
+        candidates.sort(key=lambda f: f.enter_time)
+        picked_ids = {f.id for f in candidates[:limit]}
+        return self.remove_from_storage_ids(picked_ids)
+
+    def transfer_storage_to_lane(
+        self,
+        spec: str,
+        bucket: str,
+        weight_ranges: list[tuple[int, int]],
+        limit: int,
+        tick: int,
+        tracker: FishTracker,
+        cap_factor: int = DEFAULT_CAP_FACTOR,
+    ) -> list[Fish]:
+        """暂存箱 → 料道：满足需求区间的鱼直接出库入道（不要求 FIFO 队头）。"""
+        lane = self.queues[spec][bucket]
+        room = max(0, lane_capacity(spec, cap_factor) - len(lane))
+        take = min(limit, room)
+        if take <= 0:
+            return []
+        picked = self.pick_storage_matching(spec, bucket, weight_ranges, take)
+        for fish in picked:
+            fish.enter_time = tick
+            lane.append(fish)
+            tracker.register(fish, tick, status="queued")
+        return picked
 
     def try_push_storage(self, fish: Fish, tick: int, tracker: FishTracker) -> bool:
         """作用：超容鱼进入暂存箱（容量满则失败）。
@@ -724,12 +821,11 @@ class SortingLanes:
                 need = plan.parts[bucket]
                 if not need:
                     continue
-                stored = [f for f in self.storage if f.spec == plan.spec and f.bucket == bucket]
-                from_storage = stored[:need]
-                if from_storage:
-                    drop_ids = {f.id for f in from_storage}
-                    self.remove_from_storage_ids(drop_ids)
-                    removed.extend(from_storage)
+                ranges = lane_demand_weight_ranges(self, plan.spec, bucket)
+                from_storage = self.pick_storage_matching(
+                    plan.spec, bucket, ranges, need
+                )
+                removed.extend(from_storage)
                 need -= len(from_storage)
                 if need:
                     chunk = self.queues[plan.spec][bucket][:need]
@@ -1035,6 +1131,12 @@ class SchedulerEngine:
         前端：fifo_monitor「需求地址列表」单张卡片；GET /api/state.demands 每路一条。"""
         ui_bucket = UI_BUCKET[bucket]
         address = lane_address(mod_key, spec, bucket)
+        if spec not in self.specs or spec not in self.lanes.queues:
+            weight_ranges = [list(bucket_weight_range(spec, bucket))]
+        else:
+            weight_ranges = [
+                list(r) for r in lane_demand_weight_ranges(self.lanes, spec, bucket)
+            ]
         base = {
             "module": mod_key,
             "spec": spec,
@@ -1042,6 +1144,7 @@ class SchedulerEngine:
             "address": address,
             "lane_id": f"{spec}_{ui_bucket}",
             "lane_bucket": bucket,
+            "weight_ranges": weight_ranges,
         }
         if spec not in self.specs:
             return {
@@ -1293,15 +1396,51 @@ class SchedulerEngine:
                 remaining.append(fish)
         self.lanes.reflow = remaining
 
+    def _release_storage_by_demands(self) -> int:
+        """暂存箱按料道广播需求（重量区间）出库入道，非 FIFO 队头顺序。"""
+        if not self.lanes.storage:
+            return 0
+        released = 0
+        for demand in self.collect_demands():
+            if not demand.get("active") or demand.get("priority", 9) > 3:
+                continue
+            spec = demand["spec"]
+            bucket = demand.get("lane_bucket")
+            if not bucket or spec not in self.specs:
+                continue
+            count = demand.get("count") or 0
+            if count <= 0:
+                continue
+            ranges = [tuple(r) for r in demand.get("weight_ranges", [])]
+            if not ranges:
+                ranges = lane_demand_weight_ranges(self.lanes, spec, bucket)
+            moved = self.lanes.transfer_storage_to_lane(
+                spec,
+                bucket,
+                ranges,
+                count,
+                self.tick,
+                self.tracker,
+                self.cap_factor,
+            )
+            if moved:
+                released += len(moved)
+                self._log(
+                    f"暂存出库: {len(moved)}条 → {spec.upper()}-{BUCKET_LABEL[bucket]} "
+                    f"区间 {ranges} ({demand.get('reason', '')})",
+                    kind="storage_out",
+                )
+        return released
+
     def _monitor_storage(self) -> None:
-        """作用：暂存箱队首超时 → 尾料（不回料道、不回流）。
+        """作用：暂存箱等待最久者超时 → 尾料（不回料道、不回流）。
         前端：fifo_monitor 暂存箱监控；GET /api/state.storage_timeout_tail。"""
         if self.move_timeout <= 0 or not self.lanes.storage:
             return
-        fish = self.lanes.storage[0]
+        fish = min(self.lanes.storage, key=lambda f: f.enter_time)
         if self.tick - fish.enter_time < self.move_timeout:
             return
-        self.lanes.pop_storage_head()
+        self.lanes.remove_from_storage_ids({fish.id})
         dwell = self.tick - fish.enter_time
         trace = self.tracker.traces.get(fish.id)
         first_in = trace.first_in_time if trace else None
@@ -1616,8 +1755,9 @@ class SchedulerEngine:
                     f"→ {BUCKET_LABEL[bucket]}区 第{fish.rounds}轮"
                 )
 
-        # 回流待入库 → 料道；满足 5kg 方案则封箱；仍堵则超容或超时弹出队头
+        # 回流待入库 → 暂存按需求区间出库 → 封箱 → 仍堵则超容或超时弹出队头
         self._process_reflow_intake()
+        self._release_storage_by_demands()
         self._try_pack_all()
         self._monitor_storage()
         self._anti_block()
@@ -1646,6 +1786,7 @@ class SchedulerEngine:
             self._sync_tick()
             before = self.stats.cartons
             self._process_reflow_intake()
+            self._release_storage_by_demands()
             self._try_pack_all()
             self._monitor_storage()
             if self.stats.cartons == before and not self.lanes.reflow and not self.lanes.storage:
