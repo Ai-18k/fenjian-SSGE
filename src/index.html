@@ -357,6 +357,7 @@
       <div class="stat"><div class="label">入料进度 / 总重</div><div class="value" id="sInput">0</div><div class="hint" id="sInputHint">0 条 · 0.000 t</div></div>
       <div class="stat"><div class="label">成功装盒</div><div class="value" id="sCartons">0</div><div class="hint">4980~5030g</div></div>
       <div class="stat"><div class="label">装箱鱼数</div><div class="value" id="sPacked">0</div></div>
+      <div class="stat"><div class="label">暂存箱</div><div class="value" id="sStorage">0</div><div class="hint" id="sStorageHint">0 / 150</div></div>
       <div class="stat"><div class="label">回流动作</div><div class="value" id="sReflow">0</div><div class="hint" id="sReflowHint">超容回流 · 累计次数</div></div>
       <div class="stat"><div class="label">规格外</div><div class="value" id="sOutside">0</div></div>
       <div class="stat"><div class="label">未匹配尾料</div><div class="value" id="sUnmatched">0</div></div>
@@ -997,10 +998,13 @@
       $("sCartons").textContent = state.cartons ?? 0;
       $("sPacked").textContent = state.packed_fish ?? 0;
       const mt = state.move_timeout ?? ($("moveTimeout").value || 30);
+      const storage = state.storage_box || {};
       $("sTickHint").textContent = `秒 · 真实经过时间 · 超时阈值${mt}s`;
       $("sReflow").textContent = state.reflow_count ?? 0;
-      $("sReflowHint").textContent = `超容 ${state.overflow_reflow ?? 0} · 超时尾料 ${state.timeout_tail ?? 0} · 阈值${mt}s`;
+      $("sReflowHint").textContent = `超容→暂存 · 箱内 ${storage.count ?? 0} · 超时尾料 ${state.timeout_tail ?? 0} · 阈值${mt}s`;
       $("sOutside").textContent = state.outside_count ?? 0;
+      $("sStorage").textContent = storage.count ?? 0;
+      $("sStorageHint").textContent = `${storage.count ?? 0} / ${storage.capacity ?? 150} · 入${state.storage_in ?? 0} 出${state.storage_packed ?? 0}`;
       $("sUnmatched").textContent = state.unmatched_count ?? 0;
       $("sReflowQ").textContent = state.reflow_queue ?? 0;
 

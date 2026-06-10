@@ -86,6 +86,7 @@ DEFAULT_TOTAL = 25000
 DEFAULT_SEED = 42
 DEFAULT_MOVE_TIMEOUT = 30
 DEFAULT_CAP_FACTOR = 8
+DEFAULT_STORAGE_CAPACITY = 150
 STOP_MODE_COUNT = "count"
 STOP_MODE_WEIGHT = "weight"
 DEFAULT_STOP_WEIGHT_TONS = 10.0
@@ -209,6 +210,10 @@ class Stats:
     reflow_count: int = 0
     timeout_tail: int = 0
     overflow_reflow: int = 0
+    storage_in: int = 0
+    storage_packed: int = 0
+    storage_timeout_tail: int = 0
+    storage_full_tail: int = 0
     unmatched_count: int = 0
     tail_count: int = 0
 
@@ -386,6 +391,10 @@ TAIL_STATUS_LABEL = {
     "unmatched_reflow": "回流后未配盒",
     "unmatched_outside": "规格外",
     "unmatched_timeout": "超时尾料",
+    "unmatched_storage": "暂存箱批末未配盒",
+    "unmatched_storage_timeout": "暂存箱超时尾料",
+    "unmatched_storage_full": "暂存箱已满",
+    "stored": "暂存箱在库",
 }
 
 
@@ -410,7 +419,10 @@ def describe_tail_trace(
     """作用：解析尾料未匹配原因（批末/回流/规格外/超时）及超容回流摘要。
     前端：index.html「尾料数据」弹窗各列；GET /api/remaining、/api/state.remaining_fish。"""
     reasons = list(trace.reflow_reasons)
-    had_timeout = trace.status == "unmatched_timeout" or "timeout" in reasons
+    had_timeout = trace.status in (
+        "unmatched_timeout",
+        "unmatched_storage_timeout",
+    ) or "timeout" in reasons
     had_overflow = "overflow" in reasons
     status = trace.status or ""
     tail_cause = TAIL_STATUS_LABEL.get(status, status or "未知")
@@ -490,20 +502,31 @@ class FishTracker:
         trace.status = "reflow"
         trace.reflow_reasons.append(reason)
 
-    def mark_timeout_tail(self, fish: Fish, tick: int, lane_wait_s: int) -> None:
-        """作用：超时鱼直接记为尾料（不进回流），记录料道等待时长。
+    def mark_timeout_tail(self, fish: Fish, tick: int, lane_wait_s: int, status: str = "unmatched_timeout") -> None:
+        """作用：超时鱼直接记为尾料（不进回流），记录料道/暂存等待时长。
         前端：index.html「尾料数据」「超时尾料」；GET /api/state.timeout_tail_log。"""
         trace = self.traces.get(fish.id)
         if trace is None:
-            self.register(fish, tick, status="unmatched_timeout")
+            self.register(fish, tick, status=status)
             trace = self.traces[fish.id]
         trace.rounds = fish.rounds
-        trace.status = "unmatched_timeout"
+        trace.status = status
         trace.outbound_time = tick
         trace.bucket = fish.bucket
         trace.lane_wait_s = lane_wait_s
         if trace not in self.unmatched:
             self.unmatched.append(trace)
+
+    def mark_stored(self, fish: Fish, tick: int) -> None:
+        """作用：超容鱼进入暂存箱，记录入箱时刻。
+        前端：fifo_monitor 暂存箱可视化；GET /api/state.storage_box。"""
+        trace = self.traces.get(fish.id)
+        if trace is None:
+            self.register(fish, tick, status="stored")
+            trace = self.traces[fish.id]
+        trace.rounds = fish.rounds
+        trace.status = "stored"
+        trace.bucket = fish.bucket
 
     def mark_unmatched(self, fish: Fish, status: str, tick: int | None = None) -> None:
         """作用：批末将未配盒鱼标为尾料（unmatched_tail/reflow/outside）。
@@ -593,6 +616,50 @@ class SortingLanes:
         }
         self.outside: list[Fish] = []
         self.reflow: list[Fish] = []
+        self.storage: list[Fish] = []
+        self.storage_capacity = DEFAULT_STORAGE_CAPACITY
+
+    def storage_for_spec(self, spec: str) -> list[Fish]:
+        """作用：取暂存箱内某规格的鱼（FIFO 顺序，优先配盒）。
+        前端：GET /api/state.storage_box.by_spec。"""
+        return [f for f in self.storage if f.spec == spec]
+
+    def storage_count(self) -> int:
+        return len(self.storage)
+
+    def bucket_fish(self, spec: str, bucket: str) -> list[Fish]:
+        """作用：暂存箱 + 料道合并视图，暂存鱼排在前面优先消耗。"""
+        stored = [f for f in self.storage if f.spec == spec and f.bucket == bucket]
+        return stored + self.queues[spec][bucket]
+
+    def try_push_storage(self, fish: Fish, tick: int, tracker: FishTracker) -> bool:
+        """作用：超容鱼进入暂存箱（容量满则失败）。
+        前端：fifo_monitor 暂存箱「进」动画与计数。"""
+        if fish.spec is None or len(self.storage) >= self.storage_capacity:
+            return False
+        fish.enter_time = tick
+        self.storage.append(fish)
+        tracker.mark_stored(fish, tick)
+        return True
+
+    def pop_storage_head(self) -> Fish | None:
+        if not self.storage:
+            return None
+        return self.storage.pop(0)
+
+    def remove_from_storage_ids(self, fish_ids: set[int]) -> list[Fish]:
+        removed: list[Fish] = []
+        kept: list[Fish] = []
+        for fish in self.storage:
+            if fish.id in fish_ids:
+                removed.append(fish)
+            else:
+                kept.append(fish)
+        self.storage = kept
+        return removed
+
+    def total_available_for_spec(self, spec: str) -> int:
+        return self.total_in_spec(spec) + len(self.storage_for_spec(spec))
 
     def _put_in_lane(self, fish: Fish, tick: int) -> str:
         """作用：将鱼放入对应规格+小中大料道队尾。
@@ -638,11 +705,12 @@ class SortingLanes:
             lane[0].enter_time = tick
 
     def remove_plan(self, plan: BoxPlan, tick: int, tracker: FishTracker) -> list[Fish]:
-        """作用：按封箱方案从料道移除对应鱼（DFS 按 ID 或 FIFO 按数量）。
+        """作用：按封箱方案从暂存箱+料道移除对应鱼（暂存优先）。
         前端：fifo_monitor 装箱工位出料动画；index 成盒数据 fish_ids。"""
         removed: list[Fish] = []
         if plan.pick_ids:
             targets = set(plan.pick_ids)
+            removed.extend(self.remove_from_storage_ids(targets))
             for bucket in BUCKETS:
                 lane = self.queues[plan.spec][bucket]
                 picked = [f for f in lane if f.id in targets]
@@ -653,16 +721,44 @@ class SortingLanes:
                 self._sync_head_enter_time(self.queues[plan.spec][bucket], tick)
         else:
             for bucket in BUCKETS:
-                n = plan.parts[bucket]
-                if n:
-                    chunk = self.queues[plan.spec][bucket][:n]
-                    del self.queues[plan.spec][bucket][:n]
+                need = plan.parts[bucket]
+                if not need:
+                    continue
+                stored = [f for f in self.storage if f.spec == plan.spec and f.bucket == bucket]
+                from_storage = stored[:need]
+                if from_storage:
+                    drop_ids = {f.id for f in from_storage}
+                    self.remove_from_storage_ids(drop_ids)
+                    removed.extend(from_storage)
+                need -= len(from_storage)
+                if need:
+                    chunk = self.queues[plan.spec][bucket][:need]
+                    del self.queues[plan.spec][bucket][:need]
                     removed.extend(chunk)
                     self._sync_head_enter_time(self.queues[plan.spec][bucket], tick)
         for fish in removed:
             tracker.mark_packed(fish, tick)
         plan.fish = removed
         return removed
+
+    def divert_head_to_storage(
+        self,
+        spec: str,
+        bucket: str,
+        tick: int,
+        tracker: FishTracker,
+    ) -> tuple[Fish | None, str]:
+        """作用：弹出料道队头鱼，优先送入暂存箱；箱满则记尾料。
+        返回 (fish, outcome)：stored | storage_full。"""
+        lane = self.queues[spec][bucket]
+        if not lane:
+            return None, ""
+        fish = lane.pop(0)
+        self._sync_head_enter_time(lane, tick)
+        if self.try_push_storage(fish, tick, tracker):
+            return fish, "stored"
+        tracker.mark_unmatched(fish, "unmatched_storage_full", tick=tick)
+        return fish, "storage_full"
 
     def divert_head(self, spec: str, bucket: str, tick: int, reason: str, tracker: FishTracker) -> Fish | None:
         """作用：弹出料道队头鱼送入回流队列（防堵：超容）。
@@ -711,15 +807,14 @@ class BoxPlanner:
 
     @staticmethod
     def _dfs_search_buffer(lanes: SortingLanes, spec: str) -> list[Fish]:
-        """取 DFS 搜索窗口：总量小用全量，否则每路只取队头 DFS_WINDOW_PER_BUCKET 条。"""
+        """取 DFS 搜索窗口：暂存箱鱼优先，再取料道（小/中/大）。"""
+        buf = lanes.storage_for_spec(spec)
         q = lanes.queues[spec]
-        total = lanes.total_in_spec(spec)
-        if total <= DFS_MAX_BUFFER:
-            buf: list[Fish] = []
+        lane_total = lanes.total_in_spec(spec)
+        if lane_total + len(buf) <= DFS_MAX_BUFFER:
             for bucket in BUCKETS:
                 buf.extend(q[bucket])
             return buf
-        buf = []
         for bucket in BUCKETS:
             buf.extend(q[bucket][:DFS_WINDOW_PER_BUCKET])
         return buf
@@ -741,8 +836,9 @@ class BoxPlanner:
     @staticmethod
     def _fifo_head_plan(lanes: SortingLanes, spec: str) -> BoxPlan | None:
         """FIFO 队头前缀枚举（O(尾数³×队深)，保证终止）。"""
-        q = lanes.queues[spec]
-        q_small, q_medium, q_large = q["small"], q["medium"], q["large"]
+        q_small = lanes.bucket_fish(spec, "small")
+        q_medium = lanes.bucket_fish(spec, "medium")
+        q_large = lanes.bucket_fish(spec, "large")
         p_small = prefix_weights(q_small)
         p_medium = prefix_weights(q_medium)
         p_large = prefix_weights(q_large)
@@ -775,7 +871,7 @@ class BoxPlanner:
         """DFS 窗口搜索；无解/过大时回退 FIFO 队头。前端：封箱触发点。"""
         if spec not in SPECS:
             return None
-        if lanes.total_in_spec(spec) < min(SPECS[spec]["counts"]):
+        if lanes.total_available_for_spec(spec) < min(SPECS[spec]["counts"]):
             return None
 
         buffer = self._dfs_search_buffer(lanes, spec)
@@ -1082,6 +1178,10 @@ class SchedulerEngine:
             (d for d in demands if d.get("active") and d.get("priority", 9) <= 3),
             active_demands[0] if active_demands else None,
         )
+        storage_by_spec: dict[str, int] = {}
+        for f in self.lanes.storage:
+            if f.spec:
+                storage_by_spec[f.spec] = storage_by_spec.get(f.spec, 0) + 1
         return {
             "tick": self.tick,
             "finished": self.finished,
@@ -1113,6 +1213,15 @@ class SchedulerEngine:
             "tail_count": self.stats.tail_count,
             "reflow_queue": len(self.lanes.reflow),
             "outside_queue": len(self.lanes.outside),
+            "storage_box": {
+                "count": self.lanes.storage_count(),
+                "capacity": self.lanes.storage_capacity,
+                "by_spec": storage_by_spec,
+            },
+            "storage_in": self.stats.storage_in,
+            "storage_packed": self.stats.storage_packed,
+            "storage_timeout_tail": self.stats.storage_timeout_tail,
+            "storage_full_tail": self.stats.storage_full_tail,
             "modules": modules,
             "recent_cartons": recent_cartons,
             "carton_records": carton_records,
@@ -1153,7 +1262,11 @@ class SchedulerEngine:
                 plan = self.planner.find_plan(self.lanes, spec)
                 if plan is None:
                     break
-                self.lanes.remove_plan(plan, self.tick, self.tracker)
+                storage_before = {f.id for f in self.lanes.storage}
+                removed = self.lanes.remove_plan(plan, self.tick, self.tracker)
+                self.stats.storage_packed += sum(
+                    1 for f in removed if f.id in storage_before
+                )
                 self.stats.cartons += 1
                 self.stats.packed_fish += plan.count
                 self.cartons.append(plan)
@@ -1180,9 +1293,54 @@ class SchedulerEngine:
                 remaining.append(fish)
         self.lanes.reflow = remaining
 
+    def _monitor_storage(self) -> None:
+        """作用：暂存箱队首超时 → 尾料（不回料道、不回流）。
+        前端：fifo_monitor 暂存箱监控；GET /api/state.storage_timeout_tail。"""
+        if self.move_timeout <= 0 or not self.lanes.storage:
+            return
+        fish = self.lanes.storage[0]
+        if self.tick - fish.enter_time < self.move_timeout:
+            return
+        self.lanes.pop_storage_head()
+        dwell = self.tick - fish.enter_time
+        trace = self.tracker.traces.get(fish.id)
+        first_in = trace.first_in_time if trace else None
+        self.tracker.mark_timeout_tail(
+            fish, self.tick, dwell, status="unmatched_storage_timeout"
+        )
+        self.stats.storage_timeout_tail += 1
+        self.stats.tail_count += 1
+        self.timeout_tail_log.append(
+            {
+                "tick": self.tick,
+                "fish_id": fish.id,
+                "weight": fish.weight,
+                "spec": fish.spec,
+                "bucket": fish.bucket,
+                "first_in_time": first_in,
+                "lane_wait_s": dwell,
+                "system_dwell_s": (
+                    self.tick - first_in if first_in is not None else None
+                ),
+                "threshold_s": self.move_timeout,
+                "rounds": fish.rounds,
+                "batch_seed": self.seed,
+                "source": "storage",
+            }
+        )
+        self._log(
+            f"暂存超时尾料: #{fish.id} {fish.spec.upper()}-{BUCKET_LABEL[fish.bucket]} "
+            f"等待 {dwell}s(阈值{self.move_timeout}s)",
+            kind="timeout_tail",
+            reason="storage_timeout",
+            fish_id=fish.id,
+            dwell_s=dwell,
+            source="storage",
+        )
+
     def _anti_block(self) -> None:
-        """作用：防堵逻辑——料道超容则弹出队头鱼回流；队首超时则直接记为尾料。
-        前端：两页「回流/尾料」分项；fifo_monitor 日志；GET /api/state 超时/超容日志。"""
+        """作用：防堵逻辑——料道超容则送入暂存箱；队首超时则直接记为尾料。
+        前端：两页「回流/尾料」分项；fifo_monitor 暂存箱；GET /api/state 超时/超容日志。"""
         for spec in self.specs:
             if self.planner.find_plan(self.lanes, spec):
                 continue
@@ -1193,10 +1351,11 @@ class SchedulerEngine:
                     continue
                 if len(lane) > cap:
                     lane_len = len(lane)
-                    fish = self.lanes.divert_head(spec, bucket, self.tick, "overflow", self.tracker)
-                    if fish:
-                        self.stats.reflow_count += 1
-                        self.stats.overflow_reflow += 1
+                    fish, outcome = self.lanes.divert_head_to_storage(
+                        spec, bucket, self.tick, self.tracker
+                    )
+                    if fish and outcome == "stored":
+                        self.stats.storage_in += 1
                         self.overflow_reflow_log.append(
                             {
                                 "tick": self.tick,
@@ -1207,15 +1366,25 @@ class SchedulerEngine:
                                 "lane_len": lane_len,
                                 "cap": cap,
                                 "rounds": fish.rounds,
+                                "destination": "storage",
                             }
                         )
                         self._log(
-                            f"回流: #{fish.id} {spec.upper()}-{BUCKET_LABEL[bucket]} "
-                            f"超容 → 第{fish.rounds}轮",
-                            kind="reflow",
+                            f"暂存: #{fish.id} {spec.upper()}-{BUCKET_LABEL[bucket]} "
+                            f"超容({lane_len}>{cap}) → 暂存箱 "
+                            f"{self.lanes.storage_count()}/{self.lanes.storage_capacity}",
+                            kind="storage_in",
                             reason="overflow",
                             fish_id=fish.id,
-                            rounds=fish.rounds,
+                        )
+                    elif fish and outcome == "storage_full":
+                        self.stats.storage_full_tail += 1
+                        self.stats.tail_count += 1
+                        self._log(
+                            f"暂存箱满: #{fish.id} {spec.upper()}-{BUCKET_LABEL[bucket]} "
+                            f"超容且箱满 → 尾料",
+                            kind="storage_full",
+                            fish_id=fish.id,
                         )
                     return
                 if (
@@ -1450,6 +1619,7 @@ class SchedulerEngine:
         # 回流待入库 → 料道；满足 5kg 方案则封箱；仍堵则超容或超时弹出队头
         self._process_reflow_intake()
         self._try_pack_all()
+        self._monitor_storage()
         self._anti_block()
         self._record_history()
 
@@ -1477,7 +1647,8 @@ class SchedulerEngine:
             before = self.stats.cartons
             self._process_reflow_intake()
             self._try_pack_all()
-            if self.stats.cartons == before and not self.lanes.reflow:
+            self._monitor_storage()
+            if self.stats.cartons == before and not self.lanes.reflow and not self.lanes.storage:
                 break
             self._anti_block()
 
@@ -1486,6 +1657,10 @@ class SchedulerEngine:
                 for fish in self.lanes.queues[spec][bucket]:
                     self.tracker.mark_unmatched(fish, "unmatched_tail", tick=self.tick)
                     self.stats.tail_count += 1
+        for fish in list(self.lanes.storage):
+            self.tracker.mark_unmatched(fish, "unmatched_storage", tick=self.tick)
+            self.stats.tail_count += 1
+        self.lanes.storage.clear()
         for fish in self.lanes.reflow:
             self.tracker.mark_unmatched(fish, "unmatched_reflow", tick=self.tick)
             self.stats.tail_count += 1
@@ -1535,9 +1710,12 @@ class SchedulerEngine:
         print(f"  成功装盒数   : {self.stats.cartons}")
         print(f"  成功装箱鱼   : {self.stats.packed_fish}")
         print(f"  规格外       : {self.stats.outside_count}")
-        print(f"  回流总次数   : {self.stats.reflow_count} (仅超容)")
-        print(f"    超时尾料   : {self.stats.timeout_tail}")
-        print(f"    超容回流   : {self.stats.overflow_reflow}")
+        print(f"  回流总次数   : {self.stats.reflow_count} (历史回流队列)")
+        print(f"    暂存入箱   : {self.stats.storage_in}")
+        print(f"    暂存出箱   : {self.stats.storage_packed}")
+        print(f"    暂存超时   : {self.stats.storage_timeout_tail}")
+        print(f"    暂存箱满   : {self.stats.storage_full_tail}")
+        print(f"    料道超时   : {self.stats.timeout_tail}")
         print(f"  未匹配/尾料  : {self.stats.unmatched_count}")
         print(f"    批末尾料   : {self.stats.tail_count}")
         print(f"  运行时长     : {self.tick}s (真实经过时间)")
