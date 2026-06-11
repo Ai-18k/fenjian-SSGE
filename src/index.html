@@ -692,6 +692,14 @@
       return Math.max(0.1, +($("totalTons").value || 10));
     }
 
+    function getBatchTotal() {
+      if (getStopMode() === "weight") {
+        const estimated = Math.ceil(getTotalTons() * 1_000_000 / 250) + 5000;
+        return Math.max(25000, estimated);
+      }
+      return Math.max(1, +($("total").value || 25000));
+    }
+
     function updateStopModeUI() {
       const weight = getStopMode() === "weight";
       $("stopCountWrap").style.display = weight ? "none" : "";
@@ -733,9 +741,10 @@
     }
 
     function buildStartBody(enabledSpecs) {
+      const weightMode = getStopMode() === "weight";
       return {
         seed: +$("seed").value,
-        total: +$("total").value,
+        total: weightMode ? getBatchTotal() : +$("total").value,
         move_timeout: +$("moveTimeout").value,
         speed: +$("speed").value,
         enabled_specs: enabledSpecs,

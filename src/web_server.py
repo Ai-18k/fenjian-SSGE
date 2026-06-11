@@ -299,7 +299,13 @@ class SimulationRunner:
             self.paused = False
             self.error = None
             self.speed = max(0.1, speed)
-            records = load_or_generate_batch(seed=seed, total=batch_total, enabled_specs=enabled)
+            records = load_or_generate_batch(
+                seed=seed,
+                total=batch_total,
+                enabled_specs=enabled,
+                stop_mode=stop_mode,
+                stop_weight_g=stop_weight_g,
+            )
             self.engine = SchedulerEngine(
                 batch_records=records,
                 seed=seed,
@@ -531,8 +537,19 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/batch":
             seed = int(qs.get("seed", [DEFAULT_SEED])[0])
             total = int(qs.get("total", [DEFAULT_TOTAL])[0])
+            stop_mode = str(qs.get("stop_mode", [STOP_MODE_COUNT])[0])
+            stop_weight_tons = float(
+                qs.get("stop_weight_tons", [DEFAULT_STOP_WEIGHT_TONS])[0]
+            )
+            stop_weight_g = int(stop_weight_tons * 1_000_000)
             enabled = parse_enabled_specs(qs.get("enabled_specs"))
-            records = load_or_generate_batch(seed=seed, total=total, enabled_specs=enabled)
+            records = load_or_generate_batch(
+                seed=seed,
+                total=total,
+                enabled_specs=enabled,
+                stop_mode=stop_mode,
+                stop_weight_g=stop_weight_g,
+            )
             payload = [
                 {
                     "id": r.id,

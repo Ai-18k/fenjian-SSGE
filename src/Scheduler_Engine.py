@@ -399,6 +399,16 @@ def batch_csv_path(
     return _root / "data" / f"fish_seed_{seed}_n{total}_en_{tag}.csv"
 
 
+def batch_csv_path_for_weight(
+    seed: int,
+    enabled_specs: tuple[str, ...],
+    stop_weight_g: int,
+) -> Path:
+    """按总重结束条件时的批次 CSV 路径（与按条数缓存分离）。"""
+    tag = enabled_specs_tag(enabled_specs)
+    return _root / "data" / f"fish_seed_{seed}_wg{stop_weight_g}_en_{tag}.csv"
+
+
 def _batch_valid_for_enabled(
     records: list,
     enabled_specs: tuple[str, ...],
@@ -498,10 +508,31 @@ def load_or_generate_batch(
     total: int = DEFAULT_TOTAL,
     csv_path: Path | None = None,
     enabled_specs: tuple[str, ...] | list[str] | None = None,
+    stop_mode: str = STOP_MODE_COUNT,
+    stop_weight_g: int = DEFAULT_STOP_WEIGHT_G,
 ) -> list:
-    """作用：按目标条数与启用规格重量区间生成批次（约 1% 相对启用的超规鱼）。
+    """作用：按结束条件生成批次（按条数或按总重；约 1% 相对启用的超规鱼）。
     前端：GET /api/batch；fifo_monitor.html「加载批次」；index.html 开始模拟前预生成 data/fish_seed_*.csv。"""
     enabled = normalize_enabled_specs(enabled_specs)
+    if stop_mode == STOP_MODE_WEIGHT:
+        stop_weight_g = max(1, int(stop_weight_g))
+        csv_path = csv_path or batch_csv_path_for_weight(seed, enabled, stop_weight_g)
+        if csv_path.exists():
+            cached = _load_batch_csv(csv_path)
+            if cached and _batch_valid_for_enabled(cached, enabled):
+                cached_weight = sum(r.weight for r in cached)
+                if cached_weight >= stop_weight_g:
+                    return cached
+        max_fish = batch_total_for_run(stop_mode, total, stop_weight_g)
+        records, _ = _seed_gen.generate_fish_batch_by_weight(
+            target_weight_g=stop_weight_g,
+            seed=seed,
+            enabled_specs=enabled,
+            max_fish=max_fish,
+        )
+        _seed_gen.save_csv(records, csv_path)
+        return records
+
     csv_path = csv_path or batch_csv_path(seed, enabled, total)
     if csv_path.exists():
         cached = _load_batch_csv(csv_path)[:total]

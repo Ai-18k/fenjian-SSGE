@@ -151,6 +151,31 @@ def _random_inside_weight(
     return rng.randint(lo, hi), spec
 
 
+def _finalize_batch_records(
+    records: list[FishRecord],
+    spec_counts: dict[str, int],
+    seed: int,
+    active_specs: list[str],
+    rng: random.Random,
+) -> tuple[list[FishRecord], BatchSummary]:
+    rng.shuffle(records)
+    for seq, fish in enumerate(records, start=1):
+        fish.id = seq
+    total = len(records)
+    total_weight = sum(f.weight for f in records)
+    actual_outside = sum(1 for f in records if f.outside)
+    summary = BatchSummary(
+        total=total,
+        total_weight=total_weight,
+        outside_count=actual_outside,
+        inside_count=total - actual_outside,
+        spec_counts={k: v for k, v in spec_counts.items() if v > 0},
+        seed=seed,
+        enabled_specs=active_specs,
+    )
+    return records, summary
+
+
 def generate_fish_batch(
     total: int = DEFAULT_TOTAL,
     outside_rate: float = DEFAULT_OUTSIDE_RATE,
@@ -182,22 +207,44 @@ def generate_fish_batch(
             records.append(FishRecord(id=i, weight=weight, spec=spec, outside=False))
             spec_counts[spec] += 1
 
-    rng.shuffle(records)
-    for seq, fish in enumerate(records, start=1):
-        fish.id = seq
+    return _finalize_batch_records(records, spec_counts, seed, active_specs, rng)
 
-    total_weight = sum(f.weight for f in records)
-    actual_outside = sum(1 for f in records if f.outside)
-    summary = BatchSummary(
-        total=total,
-        total_weight=total_weight,
-        outside_count=actual_outside,
-        inside_count=total - actual_outside,
-        spec_counts={k: v for k, v in spec_counts.items() if v > 0},
-        seed=seed,
-        enabled_specs=active_specs,
-    )
-    return records, summary
+
+def generate_fish_batch_by_weight(
+    target_weight_g: int,
+    outside_rate: float = DEFAULT_OUTSIDE_RATE,
+    seed: int = DEFAULT_SEED,
+    enabled_specs: tuple[str, ...] | list[str] | None = None,
+    max_fish: int = DEFAULT_TOTAL,
+) -> tuple[list[FishRecord], BatchSummary]:
+    """
+    按目标总重（克）生成批次，累计重量达到 target_weight_g 后停止。
+
+    - target_weight_g: 目标总重（克），如 10 吨 = 10_000_000
+    - max_fish: 安全上限条数，防止异常配置无限生成
+    """
+    rng = random.Random(seed)
+    active_specs = normalize_enabled_specs(enabled_specs)
+    target_weight_g = max(1, int(target_weight_g))
+    max_fish = max(1, int(max_fish))
+
+    records: list[FishRecord] = []
+    spec_counts: dict[str, int] = {s: 0 for s in active_specs}
+    total_weight = 0
+
+    while total_weight < target_weight_g and len(records) < max_fish:
+        if rng.random() < outside_rate:
+            weight = _random_outside_weight(rng, active_specs)
+            records.append(FishRecord(id=0, weight=weight, spec=None, outside=True))
+        else:
+            weight, spec = _random_inside_weight(rng, active_specs)
+            records.append(
+                FishRecord(id=0, weight=weight, spec=spec, outside=False)
+            )
+            spec_counts[spec] += 1
+        total_weight += weight
+
+    return _finalize_batch_records(records, spec_counts, seed, active_specs, rng)
 
 
 def format_summary(summary: BatchSummary) -> str:
@@ -257,7 +304,13 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="按启用规格重量区间随机生成鱼批次（默认 25000 条，1% 超规）"
     )
-    parser.add_argument("-n", "--total", type=int, default=DEFAULT_TOTAL, help="目标条数")
+    parser.add_argument("-n", "--total", type=int, default=DEFAULT_TOTAL, help="目标条数（与 --target-weight-g 二选一）")
+    parser.add_argument(
+        "--target-weight-g",
+        type=int,
+        default=0,
+        help="目标总重（克）；指定后按总重生成，忽略 -n",
+    )
     parser.add_argument(
         "-r", "--outside-rate", type=float, default=DEFAULT_OUTSIDE_RATE, help="超规比例"
     )
@@ -278,12 +331,21 @@ def main() -> None:
     if args.enabled_specs.strip():
         enabled = [s.strip() for s in args.enabled_specs.split(",") if s.strip()]
 
-    records, summary = generate_fish_batch(
-        total=args.total,
-        outside_rate=args.outside_rate,
-        seed=args.seed,
-        enabled_specs=enabled,
-    )
+    if args.target_weight_g > 0:
+        records, summary = generate_fish_batch_by_weight(
+            target_weight_g=args.target_weight_g,
+            outside_rate=args.outside_rate,
+            seed=args.seed,
+            enabled_specs=enabled,
+            max_fish=max(args.total, DEFAULT_TOTAL),
+        )
+    else:
+        records, summary = generate_fish_batch(
+            total=args.total,
+            outside_rate=args.outside_rate,
+            seed=args.seed,
+            enabled_specs=enabled,
+        )
 
     out_dir = default_output_dir()
     csv_path = args.output or out_dir / f"fish_seed_{args.seed}.csv"

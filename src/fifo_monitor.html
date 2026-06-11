@@ -789,9 +789,10 @@ function getStopTargetKey(){
 }
 function buildStartBody(extra){
   extra=extra||{};
+  const weightMode=getStopMode()==='weight';
   return Object.assign({
     seed:Number($('seedInput').value||42),
-    total:getTotalFish(),
+    total:weightMode?getBatchTotal():getTotalFish(),
     move_timeout:getHeadTimeout(),
     cap_factor:getCapFactor(),
     speed:getSpeed(),
@@ -955,15 +956,22 @@ async function loadBatch(batchTotal){
     ?('按总重 '+getTotalTons()+' t 结束 · 预生成上限 '+total+' 条')
     :('按条数 '+getTotalFish()+' 条');
   log('生成批次 seed='+seed+' · '+stopHint+' · 启用 '+enabled.replace(/,/g,', ')+' …');
-  const res=await fetch('/api/batch?seed='+seed+'&total='+total+enabledSpecsQuery());
+  const res=await fetch('/api/batch?seed='+seed+'&total='+total
+    +'&stop_mode='+encodeURIComponent(getStopMode())
+    +'&stop_weight_tons='+getTotalTons()
+    +enabledSpecsQuery());
   const data=await res.json();
   batchFish=data.fish||[];
   batchIndex=0;
   batchLoaded=true;
   serverSessionKey=seed+'_'+total+'_'+getStopMode()+'_'+getStopTargetKey()+'_'+enabled;
   const outsideN=batchFish.filter(f=>f.outside).length;
-  const weightKg=(batchFish.reduce((s,f)=>s+(f.weight||0),0)/1000).toFixed(1);
-  log('批次就绪：'+batchFish.length+' 条 · 批次总重约 '+weightKg+' kg（规格外 '+outsideN+'）');
+  const batchWeightG=batchFish.reduce((s,f)=>s+(f.weight||0),0);
+  if(getStopMode()==='weight'){
+    log('批次就绪：'+batchFish.length+' 条 · 批次总重 '+(batchWeightG/1e6).toFixed(3)+' t（目标 '+getTotalTons()+' t · 规格外 '+outsideN+'）');
+  }else{
+    log('批次就绪：'+batchFish.length+' 条 · 批次总重约 '+(batchWeightG/1000).toFixed(1)+' kg（规格外 '+outsideN+'）');
+  }
 }
 
 function buildLayout(){
@@ -1347,7 +1355,6 @@ function update(dt){
       spawnTimer-=interval;
       try{spawnBatchRow(batchFish[batchIndex++])}catch(e){console.error('spawnBatchRow',e);batchIndex++}
     }
-    if(batchIndex>=getTotalFish()&&batchIndex>=serverInputCount&&!movingFish.length&&finished)finishBatch();
   }
   for(let i=movingFish.length-1;i>=0;i--){
     moveAlongPath(movingFish[i],dtScaled);
