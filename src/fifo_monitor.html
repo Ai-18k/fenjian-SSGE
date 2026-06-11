@@ -1587,9 +1587,15 @@ function drawModule(m){
   let gy=m.y+56;
   for(const spec of m.specs){
     const dis=!isSpecEnabled(spec);
+    const specInfo=serverSessionActive()?getModuleSpecInfo(spec):null;
+    const specTot=specInfo?specInfo.total:totalQueuedForSpec(spec);
+    const specCap=specInfo?specInfo.total_capacity:specTotalCapacity(spec);
     roundRect(m.x+14,gy-11,990,66,10,dis?'#f8fafc':'#fff',dis?'#e2e8f0':'#dbe3ef',1);
     ctx.fillStyle=dis?'#cbd5e1':m.color;roundRect(m.x+22,gy-2,70,44,10,dis?'#cbd5e1':m.color,dis?'#cbd5e1':m.color,1);
     ctx.fillStyle=dis?'#94a3b8':'#fff';ctx.font='bold 16px Arial';ctx.fillText(specName(spec),m.x+34,gy+16);
+    ctx.fillStyle=dis?'#94a3b8':'#64748b';ctx.font='10px Arial';ctx.textAlign='right';
+    ctx.fillText('Σ'+specTot+'/'+specCap,m.x+988,gy+8);
+    ctx.textAlign='left';
     for(const b of BUCKETS){const lane=lanes[spec+'_'+b];drawLane(lane,m);drawGate(lane);drawPipe([{x:lane.x2+32,y:lane.y},{x:m.mergeX,y:lane.y}],dis?'#e2e8f0':'#bbf7d0',5)}
     gy+=66;
   }
@@ -1607,15 +1613,13 @@ function drawLane(lane,m){
   const cap=capacityForSpec(lane.spec);
   const srv=serverSessionActive()&&serverLaneCounts(lane.spec,lane.bucket);
   const laneN=srv?srv.lane:lane.queue.length;
-  const specTot=srv?srv.total:totalQueuedForSpec(lane.spec);
-  const specCap=srv?srv.cap:specTotalCapacity(lane.spec);
   roundRect(m.x+112,lane.y-8,30,16,8,dis?'#e2e8f0':BUCKET_COLOR[lane.bucket],'#94a3b8',1);
   ctx.fillStyle=dis?'#94a3b8':'#0f172a';ctx.font='bold 11px Arial';ctx.fillText(bucketLabel(lane.bucket),m.x+118,lane.y+4);
   const br=BUCKET_RANGES[lane.spec],rule=UI_BUCKET_TO_RULE[lane.bucket];
-  if(br&&br[rule]&&!dis){ctx.font='9px Arial';ctx.fillStyle='#64748b';ctx.fillText(br[rule][0]+'-'+br[rule][1],m.x+118,lane.y+14)}
+  if(br&&br[rule]&&!dis){ctx.font='9px Arial';ctx.fillStyle='#64748b';ctx.fillText(br[rule][0]+'-'+br[rule][1],m.x+148,lane.y+4)}
   drawConv(lane.x1,lane.y-8,lane.x2-lane.x1,16,true,dis?'#f1f5f9':'#dcfce7',dis?'#e2e8f0':'#bbf7d0',null);
-  ctx.fillStyle='#64748b';ctx.font='10px Arial';
-  ctx.fillText(laneN+'/'+cap+' · Σ'+specTot+'/'+specCap,lane.x1+4,lane.y-11);
+  ctx.fillStyle=dis?'#94a3b8':'#475569';ctx.font='bold 10px Arial';
+  ctx.fillText(laneN+'/'+cap,lane.x1+6,lane.y+5);
 }
 function drawGate(lane){const x=lane.x2+8,y=lane.y-10;roundRect(x,y,24,20,5,lane.gateOpen?'#dcfce7':'#f1f5f9',lane.gateOpen?'#16a34a':'#94a3b8',1)}
 function drawBox(m){
