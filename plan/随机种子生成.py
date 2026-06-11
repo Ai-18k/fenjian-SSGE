@@ -5,7 +5,7 @@
 @File : 随机种子生成.py
 @Author : 18k
 @Date : 2026/6/1
-@Description: 随机生成 25000 条鱼的质量数据，其中 1% 不在规格范围（65-700g）内
+@Description: 按前端目标条数与启用规格重量区间随机生成批次，约 1% 为超规鱼（不在启用规格范围内）
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ import random
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-# 成品规格表：重量范围 g
+# 成品规格表：重量范围 g（与 Scheduler_Engine.SPECS range 一致）
 SPECS: dict[str, tuple[int, int]] = {
     "15p": (566, 700),
     "20p": (446, 565),
@@ -64,6 +64,7 @@ class BatchSummary:
     inside_count: int = 0
     spec_counts: dict[str, int] = field(default_factory=dict)
     seed: int = DEFAULT_SEED
+    enabled_specs: list[str] = field(default_factory=list)
 
     @property
     def avg_weight(self) -> float:
@@ -74,36 +75,78 @@ class BatchSummary:
         return self.outside_count / self.total if self.total else 0.0
 
 
-def classify_spec(weight: int) -> str | None:
-    for name, (lo, hi) in SPECS.items():
+def normalize_enabled_specs(
+    enabled_specs: tuple[str, ...] | list[str] | None,
+) -> list[str]:
+    """解析启用规格列表，默认全规格。"""
+    if not enabled_specs:
+        return list(SPEC_NAMES)
+    active = [s for s in enabled_specs if s in SPECS]
+    return active or list(SPEC_NAMES)
+
+
+def enabled_ranges(enabled_specs: list[str]) -> list[tuple[int, int]]:
+    return [SPECS[s] for s in enabled_specs if s in SPECS]
+
+
+def classify_spec(
+    weight: int,
+    enabled_specs: list[str] | None = None,
+) -> str | None:
+    """在启用规格范围内按克重归类；未命中返回 None。"""
+    for name in normalize_enabled_specs(enabled_specs):
+        lo, hi = SPECS[name]
         if lo <= weight <= hi:
             return name
     return None
 
 
-def is_valid_weight(weight: int) -> bool:
-    return VALID_MIN <= weight <= VALID_MAX
+def is_outside_weight(
+    weight: int,
+    enabled_specs: tuple[str, ...] | list[str] | None = None,
+) -> bool:
+    """相对启用规格：不在任一启用重量区间内视为超规。"""
+    return classify_spec(weight, normalize_enabled_specs(enabled_specs)) is None
 
 
 def is_true_outside_weight(weight: int) -> bool:
-    """仅 65–700g 之外视为规格外（与 1% 规格外定义一致）。"""
+    """全局 65–700g 之外（兼容旧批次校验）。"""
     return weight < VALID_MIN or weight > VALID_MAX
 
 
-def _random_outside_weight(rng: random.Random) -> int:
-    """生成不在 65-700g 范围内的重量。"""
-    if rng.random() < 0.5:
-        return rng.randint(30, VALID_MIN - 1)
-    return rng.randint(VALID_MAX + 1, 850)
+def _random_outside_weight(
+    rng: random.Random,
+    enabled_specs: list[str],
+) -> int:
+    """生成不在启用规格范围内的超规重量。"""
+    ranges = sorted(enabled_ranges(enabled_specs))
+    union_lo = min(lo for lo, _ in ranges)
+    union_hi = max(hi for _, hi in ranges)
+
+    strategies: list[str] = []
+    if union_lo > 30:
+        strategies.append("below")
+    strategies.append("above")
+    disabled = [s for s in SPEC_NAMES if s not in enabled_specs]
+    if disabled:
+        strategies.append("disabled_spec")
+
+    pick = rng.choice(strategies)
+    if pick == "below":
+        return rng.randint(30, union_lo - 1)
+    if pick == "above":
+        return rng.randint(union_hi + 1, 850)
+    spec = rng.choice(disabled)
+    lo, hi = SPECS[spec]
+    return rng.randint(lo, hi)
 
 
 def _random_inside_weight(
     rng: random.Random,
-    spec_names: list[str] | None = None,
+    enabled_specs: list[str],
 ) -> tuple[int, str]:
-    """随机选一个规格，再在该规格范围内取重量。"""
-    names = spec_names or SPEC_NAMES
-    spec = rng.choice(names)
+    """在启用规格中随机选一档，再在其重量区间内取克重。"""
+    spec = rng.choice(enabled_specs)
     lo, hi = SPECS[spec]
     return rng.randint(lo, hi), spec
 
@@ -117,23 +160,22 @@ def generate_fish_batch(
     """
     生成一批鱼的质量数据。
 
-    - total: 总条数，默认 25000
-    - outside_rate: 规格外比例，默认 1%（250 条）
+    - total: 目标条数（前端传入）
+    - outside_rate: 超规比例，默认 1%
+    - enabled_specs: 启用规格；规格内鱼仅在其重量区间内随机
     - seed: 随机种子，保证可复现
     """
     rng = random.Random(seed)
+    active_specs = normalize_enabled_specs(enabled_specs)
     outside_count = round(total * outside_rate)
     inside_count = total - outside_count
-    active_specs = [s for s in (enabled_specs or SPEC_NAMES) if s in SPECS]
-    if not active_specs:
-        active_specs = list(SPEC_NAMES)
 
     records: list[FishRecord] = []
-    spec_counts: dict[str, int] = {s: 0 for s in SPEC_NAMES}
+    spec_counts: dict[str, int] = {s: 0 for s in active_specs}
 
     for i in range(1, total + 1):
         if i <= outside_count:
-            weight = _random_outside_weight(rng)
+            weight = _random_outside_weight(rng, active_specs)
             records.append(FishRecord(id=i, weight=weight, spec=None, outside=True))
         else:
             weight, spec = _random_inside_weight(rng, active_specs)
@@ -153,6 +195,7 @@ def generate_fish_batch(
         inside_count=total - actual_outside,
         spec_counts={k: v for k, v in spec_counts.items() if v > 0},
         seed=seed,
+        enabled_specs=active_specs,
     )
     return records, summary
 
@@ -160,15 +203,16 @@ def generate_fish_batch(
 def format_summary(summary: BatchSummary) -> str:
     lines = [
         f"随机种子: {summary.seed}",
+        f"启用规格: {', '.join(summary.enabled_specs)}",
         f"总条数  : {summary.total}",
         f"总重量  : {summary.total_weight:,}g ({summary.total_weight / 1000:.2f}kg)",
         f"均重    : {summary.avg_weight:.1f}g",
         f"规格内  : {summary.inside_count} 条",
-        f"规格外  : {summary.outside_count} 条 ({summary.outside_rate * 100:.2f}%)",
+        f"超规    : {summary.outside_count} 条 ({summary.outside_rate * 100:.2f}%)",
         "",
         "各规格条数:",
     ]
-    for spec in SPEC_NAMES:
+    for spec in summary.enabled_specs:
         cnt = summary.spec_counts.get(spec, 0)
         if cnt:
             lo, hi = SPECS[spec]
@@ -210,22 +254,35 @@ def default_output_dir() -> Path:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="随机生成鱼质量数据（默认 25000 条，1% 规格外）")
-    parser.add_argument("-n", "--total", type=int, default=DEFAULT_TOTAL, help="总条数")
+    parser = argparse.ArgumentParser(
+        description="按启用规格重量区间随机生成鱼批次（默认 25000 条，1% 超规）"
+    )
+    parser.add_argument("-n", "--total", type=int, default=DEFAULT_TOTAL, help="目标条数")
     parser.add_argument(
-        "-r", "--outside-rate", type=float, default=DEFAULT_OUTSIDE_RATE, help="规格外比例"
+        "-r", "--outside-rate", type=float, default=DEFAULT_OUTSIDE_RATE, help="超规比例"
     )
     parser.add_argument("--seed", type=int, default=DEFAULT_SEED, help="随机种子")
+    parser.add_argument(
+        "--enabled-specs",
+        type=str,
+        default="",
+        help="启用规格，逗号分隔，如 15p,20p,25p",
+    )
     parser.add_argument(
         "-o", "--output", type=Path, default=None, help="CSV 输出路径（默认 data/fish_seed_{seed}.csv）"
     )
     parser.add_argument("--json", type=Path, default=None, help="可选 JSON 输出路径")
     args = parser.parse_args()
 
+    enabled = None
+    if args.enabled_specs.strip():
+        enabled = [s.strip() for s in args.enabled_specs.split(",") if s.strip()]
+
     records, summary = generate_fish_batch(
         total=args.total,
         outside_rate=args.outside_rate,
         seed=args.seed,
+        enabled_specs=enabled,
     )
 
     out_dir = default_output_dir()

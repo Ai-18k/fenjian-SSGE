@@ -919,7 +919,7 @@
       const summary = `<div class="data-summary">
         共 <strong>${records.length}</strong> 次超容回流 ·
         料道长度 平均 ${avg} · 最大 ${max} ·
-        「料道数」= 弹出时该分区队列长度；「容量」= 允许上限（超出则弹出队头）
+        「规格合计」= 弹出时该规格小/中/大合计条数；「容量」= 三合一上限（超出则从最长分区弹队头入暂存）
       </div>`;
       const tail = records.length > 1000
         ? `<div class="data-summary">… 仅显示最近 1000 条</div>`
@@ -927,7 +927,7 @@
       return summary + tail + `<div class="data-table-wrap"><table class="data-table">
         <thead><tr>
           <th>#</th><th>时刻</th><th>鱼ID</th><th>重量g</th><th>规格</th><th>分区</th>
-          <th>料道数</th><th>容量</th><th>轮次</th>
+          <th>规格合计</th><th>三合一容量</th><th>轮次</th>
         </tr></thead><tbody>${body}</tbody></table></div>`;
     }
 

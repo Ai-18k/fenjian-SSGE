@@ -104,7 +104,7 @@
     <label id="stopCountWrap">目标条数<input id="totalFish" type="number" value="25000" min="1"></label>
     <label id="stopWeightWrap" style="display:none">目标总重(吨)<input id="totalTons" type="number" value="10" min="0.1" step="0.1"></label>
     <label>速度<input id="speedInput" type="number" value="8" min="1" max="500"></label>
-    <label>料道容量倍率<input id="capacityFactor" type="number" value="8"></label>
+    <label>料道扩容(+N)<input id="capacityFactor" type="number" value="1" min="1" title="三合一合计 = min(装箱尾数) + N"></label>
     <label>队首超时(s)<input id="headTimeout" type="number" value="0"></label>
     <label>显示模式<select id="drawMode"><option value="normal">正常</option><option value="light">轻量</option></select></label>
     <button class="good" id="startBtn">开始</button>
@@ -130,7 +130,7 @@
   <section class="grid">
     <div class="panel scene-wrap">
       <canvas id="scene" width="1740" height="1475"></canvas>
-      <p class="scene-caption">小中大区间：plan/细分规则.py · 左侧橙色「暂存箱」150尾：超容入箱、FIFO优先配盒、超时记尾料 · 出→需求匹配</p>
+      <p class="scene-caption">小中大区间：plan/细分规则.py · 三合一容量=min(装箱尾数)+扩容 · 单路≈合计÷3 · DFS 封箱 · 暂存箱兜底</p>
     </div>
     <aside class="side-col">
       <div class="panel">
@@ -185,7 +185,7 @@
  * =============================================================================
  */
 const TARGET_MIN=4980,TARGET_MAX=5030,TARGET_MID=5005;
-const SPECS={"15p":{range:[566,700],counts:[7,8,9]},"20p":{range:[446,565],counts:[10,11]},"25p":{range:[366,445],counts:[12,13,14]},"30p":{range:[306,365],counts:[15,16]},"35p":{range:[266,305],counts:[17,18,19]},"40p":{range:[231,265],counts:[20,21]},"45p":{range:[211,230],counts:[22,23]},"50p":{range:[183,210],counts:[25,26]},"60p":{range:[153,182],counts:[30,31]},"70p":{range:[133,152],counts:[35,36]},"80p":{range:[116,132],counts:[40,41]},"90p":{range:[106,115],counts:[45,46]},"100p":{range:[96,105],counts:[50,51]},"110p":{range:[87,95],counts:[55,56]},"120p":{range:[80,86],counts:[60,61]},"130p":{range:[74,79],counts:[65,66]},"140p":{range:[69,73],counts:[70,71]},"150p":{range:[65,68],counts:[75,76]}};
+const SPECS={"15p":{range:[566,700],counts:[7,8]},"20p":{range:[446,565],counts:[10,11]},"25p":{range:[366,445],counts:[12,13,14]},"30p":{range:[306,365],counts:[15,16]},"35p":{range:[266,305],counts:[17,18,19]},"40p":{range:[231,265],counts:[20,21]},"45p":{range:[211,230],counts:[22,23]},"50p":{range:[183,210],counts:[25,26]},"60p":{range:[153,182],counts:[30,31]},"70p":{range:[133,152],counts:[35,36]},"80p":{range:[116,132],counts:[40,41]},"90p":{range:[106,115],counts:[45,46]},"100p":{range:[96,105],counts:[50,51]},"110p":{range:[87,95],counts:[55,56]},"120p":{range:[80,86],counts:[60,61]},"130p":{range:[74,79],counts:[65,66]},"140p":{range:[69,73],counts:[70,71]},"150p":{range:[65,68],counts:[75,76]}};
 const MODULE_SPECS={A:["15p","20p","25p","30p","35p","40p"],B:["45p","50p","60p","70p","80p","90p"],C:["100p","110p","120p","130p","140p","150p"]};
 const ALL_SPECS=Object.values(MODULE_SPECS).flat();
 const MODULE_COLOR={A:'#16a34a',B:'#2563eb',C:'#7c3aed'};
@@ -210,8 +210,13 @@ let syncPollState=null;
 let serverInputCount=0,serverInputWeight=0,serverStopMode='count',serverStopTargetCount=25000,serverStopTargetTons=10;
 let intakeSynced=false;
 let serverDemands=null,serverInletDemand=null,serverDemandTick=0;
+let serverModules=null;
+let pollCursor={since_carton:0,since_timeout_tail:0,since_overflow_reflow:0};
+let pollSessionSeed=null;
+let lastMergedState=null;
+let boxSealTimers={};
 /** 与 GET /api/state 对齐的回流/尾料分项；null 表示无后端会话，回退本地动画计数 */
-let serverReflowStats=null,serverStorageStats=null;
+let serverReflowStats=null,serverStorageStats=null,serverCapFactor=null;
 let activeView='fifo',statsFrameLoaded=false;
 let enabledSpecs=new Set(['15p','20p','25p','30p','35p','40p']);
 function isSpecEnabled(spec){return enabledSpecs.has(spec)}
@@ -260,10 +265,17 @@ function buildSpecToggles(){
     root.appendChild(g);
   }
 }
-async function reloadBatchForEnabledSpecs(){
+function invalidateBatch(){
   batchLoaded=false;
+  batchFish=[];
+  batchIndex=0;
   serverSessionKey='';
-  await loadBatch();
+}
+async function reloadBatchForEnabledSpecs(){
+  if(running||finished){log('运行中无法切换启用规格');return}
+  invalidateBatch();
+  log('启用规格已变更，点击「开始」后按新规格生成批次');
+  updateUI();
   draw();
 }
 function setActiveView(view){
@@ -358,6 +370,106 @@ function syncServerReflowStats(state){
 }
 
 /** 与 index.html / Scheduler_Engine 口径一致；无后端会话时用本地动画三项之和 */
+function serverSessionActive(){
+  const s=syncPollState||lastMergedState;
+  return !!(s&&(s.running||s.finished||s.paused)&&s.status!=='idle');
+}
+
+function resetPollCursor(){
+  pollCursor={since_carton:0,since_timeout_tail:0,since_overflow_reflow:0};
+  pollSessionSeed=null;
+  lastMergedState=null;
+  serverModules=null;
+  boxSealTimers={};
+}
+
+function statePollUrl(){
+  const q=new URLSearchParams({
+    since_carton:String(pollCursor.since_carton),
+    since_timeout_tail:String(pollCursor.since_timeout_tail),
+    since_overflow_reflow:String(pollCursor.since_overflow_reflow),
+  });
+  return '/api/state?'+q.toString();
+}
+
+function mergePollState(delta){
+  if(!delta)return null;
+  if(delta.status==='idle'&&!delta.running){
+    resetPollCursor();
+    return delta;
+  }
+  const seedChanged=delta.seed!=null&&pollSessionSeed!=null&&delta.seed!==pollSessionSeed;
+  const fullReset=!delta.snapshot_delta||!lastMergedState||seedChanged;
+  if(fullReset){
+    pollSessionSeed=delta.seed??pollSessionSeed;
+    lastMergedState=Object.assign({},delta,{
+      carton_records:delta.carton_records||[],
+      timeout_tail_log:delta.timeout_tail_log||[],
+      overflow_reflow_log:delta.overflow_reflow_log||[],
+    });
+    syncModuleFinishedFromState(lastMergedState);
+  }else{
+    lastMergedState=Object.assign({},delta,{
+      carton_records:(lastMergedState.carton_records||[]).concat(delta.carton_records||[]),
+      timeout_tail_log:(lastMergedState.timeout_tail_log||[]).concat(delta.timeout_tail_log||[]),
+      overflow_reflow_log:(lastMergedState.overflow_reflow_log||[]).concat(delta.overflow_reflow_log||[]),
+    });
+  }
+  pollCursor.since_carton=delta.carton_total??lastMergedState.cartons??0;
+  pollCursor.since_timeout_tail=delta.timeout_tail_total??pollCursor.since_timeout_tail;
+  pollCursor.since_overflow_reflow=delta.overflow_reflow_total??pollCursor.since_overflow_reflow;
+  if(delta.seed!=null)pollSessionSeed=delta.seed;
+  return lastMergedState;
+}
+
+function syncServerModules(state){
+  if(!state||(state.status==='idle'&&!state.running&&!state.finished)){
+    serverModules=null;
+    return;
+  }
+  serverModules=state.modules||null;
+}
+
+function getModuleSpecInfo(spec){
+  if(!serverModules)return null;
+  const mod=moduleOfSpec(spec);
+  return serverModules[mod]&&serverModules[mod][spec]||null;
+}
+
+function getDemandForSpec(spec){
+  return getDemandsForUI().find(d=>d.spec===spec)||null;
+}
+
+function syncModuleFinishedFromState(state){
+  if(!state)return;
+  for(const k of Object.keys(modules))modules[k].box.finished=0;
+  for(const rec of (state.carton_records||[])){
+    const modKey=moduleOfSpec(rec.spec);
+    if(modules[modKey])modules[modKey].box.finished++;
+  }
+  if((state.carton_records||[]).length)cartonSeq=Math.max(cartonSeq,state.carton_total||0);
+}
+
+function handleNewCartons(records){
+  if(!records||!records.length)return;
+  for(const rec of records){
+    const spec=rec.spec;
+    const modKey=moduleOfSpec(spec);
+    const m=modules[modKey];
+    if(!m)continue;
+    boxSealTimers[spec]={until:simTime+0.85,count:rec.count,weight:rec.weight,spec};
+    m.busy=true;
+    m.plan={spec:spec,count:rec.count,weight:rec.weight,parts:rec.parts||{}};
+    m.box.phase='sealing';
+    m.box.sealTimer=0.85;
+    m.box.count=rec.count;
+    m.box.weight=rec.weight;
+    m.box.finished+=1;
+    if(rec.seq!=null)cartonSeq=Math.max(cartonSeq,rec.seq);
+    log('完成箱 #'+String(rec.seq||cartonSeq).padStart(4,'0')+'：'+specName(spec)+' '+rec.count+'尾/'+rec.weight+'g');
+  }
+}
+
 function getReflowTailDisplay(){
   if(serverReflowStats){
     const s=serverReflowStats;
@@ -389,7 +501,8 @@ async function applyServerState(state,allowSkip){
       if(!state||state.status==='idle'){
         finished=false;serverFinishedHandled=false;intakeSynced=false;
         serverDemands=null;serverInletDemand=null;serverDemandTick=0;
-        serverReflowStats=null;serverStorageStats=null;
+        serverModules=null;serverReflowStats=null;serverStorageStats=null;serverCapFactor=null;
+        resetPollCursor();
       }
     }
     if(state&&state.input_count!=null)syncIntakePosition(state.input_count,false);
@@ -419,6 +532,7 @@ async function applyServerState(state,allowSkip){
     serverInletDemand=state.inlet_demand||null;
     serverDemandTick=state.tick||0;
   }
+  syncServerModules(state);
   if(state.cartons!=null)stats.cartons=state.cartons;
   syncServerReflowStats(state);
   syncIntakePosition(state.input_count||0,!!allowSkip);
@@ -451,8 +565,12 @@ function scheduleSyncPoll(state){
 
 async function pollServerState(){
   try{
-    const state=await apiJson('/api/state');
+    const delta=await apiJson(statePollUrl());
+    const state=mergePollState(delta);
     syncPollState=state;
+    if(delta.snapshot_delta){
+      handleNewCartons(delta.carton_records||[]);
+    }
     await applyServerState(state,false);
     updateUI();
   }catch(e){console.error(e)}
@@ -485,6 +603,7 @@ function buildStartBody(extra){
     seed:Number($('seedInput').value||42),
     total:getTotalFish(),
     move_timeout:getHeadTimeout(),
+    cap_factor:getCapFactor(),
     speed:getSpeed(),
     enabled_specs:getEnabledSpecs(),
     stop_mode:getStopMode(),
@@ -525,6 +644,10 @@ function syncStopSettingsFromState(state){
 }
 function syncRunProgressFromState(state){
   if(!state)return;
+  if(state.cap_factor!=null){
+    serverCapFactor=state.cap_factor;
+    $('capacityFactor').value=state.cap_factor;
+  }
   serverStopMode=state.stop_mode||serverStopMode;
   if(state.stop_target_count!=null)serverStopTargetCount=state.stop_target_count;
   if(state.stop_target_weight_tons!=null)serverStopTargetTons=state.stop_target_weight_tons;
@@ -542,7 +665,10 @@ async function syncSpeedToServer(){
     if(cur.running)await apiJson('/api/speed',{speed:getSpeed()});
   }catch(e){console.error(e)}
 }
-function getCapFactor(){return Math.max(1,Number($('capacityFactor').value||8))}
+function getCapFactor(){
+  if(serverCapFactor!=null)return serverCapFactor;
+  return Math.max(1,Number($('capacityFactor').value||1));
+}
 function getHeadTimeout(){return Math.max(0,Number($('headTimeout').value||0))}
 function specName(s){return String(s).toUpperCase()}
 function bucketLabel(b){return b==='light'?'小':b==='mid'?'中':'大'}
@@ -592,7 +718,27 @@ function bucketOfLegacyThirdSplit(spec,w){
 }
 
 function laneAddress(mod,spec,bucket){return mod+'/'+spec+'/'+bucket}
-function capacityForSpec(spec){return Math.ceil(Math.max(...SPECS[spec].counts)*getCapFactor()/3)}
+function specAddress(mod,spec){return mod+'/'+spec}
+function formatWeightRanges(ranges){
+  if(!ranges||!ranges.length)return '—';
+  return ranges.map(r=>r[0]+'-'+r[1]+'g').join(' / ');
+}
+function weightInRanges(w,ranges){
+  if(!ranges||!ranges.length)return true;
+  return ranges.some(r=>w>=r[0]&&w<=r[1]);
+}
+/** 与 Scheduler_Engine 一致：三合一 = min(装箱尾数) + 扩容 N；单路 = 合计÷3 */
+function specMinCount(spec){return Math.min(...SPECS[spec].counts)}
+function specTotalCapacity(spec){return specMinCount(spec)+getCapFactor()}
+function capacityForSpec(spec){return Math.ceil(specTotalCapacity(spec)/3)}
+function applySpecCountsFromConfig(cfg){
+  const src=cfg&&cfg.spec_counts;
+  if(!src||typeof src!=='object')return;
+  for(const [spec,counts] of Object.entries(src)){
+    if(SPECS[spec]&&Array.isArray(counts)&&counts.length)SPECS[spec].counts=counts;
+  }
+}
+function totalQueuedForSpec(spec){return BUCKETS.reduce((n,b)=>n+(lanes[spec+'_'+b]?.queue.length||0),0)}
 function feedTrackEntryPath(){
   const tx=FEED_TRACK.x;
   return [{x:250,y:70},{x:335,y:70,pause:.15},{x:420,y:70},{x:tx,y:70},{x:tx,y:FEED_TRACK.top,pause:.08}];
@@ -615,7 +761,10 @@ async function loadBatch(batchTotal){
   const seed=Number($('seedInput').value||42);
   const total=batchTotal!=null?batchTotal:getBatchTotal();
   const enabled=getEnabledSpecs().join(',');
-  log('加载批次 seed='+seed+' · 上限 '+total+' 条 · 结束条件 '+ (getStopMode()==='weight'?getTotalTons()+' t':getTotalFish()+' 条') +' …');
+  const stopHint=getStopMode()==='weight'
+    ?('按总重 '+getTotalTons()+' t 结束 · 预生成上限 '+total+' 条')
+    :('按条数 '+getTotalFish()+' 条');
+  log('生成批次 seed='+seed+' · '+stopHint+' · 启用 '+enabled.replace(/,/g,', ')+' …');
   const res=await fetch('/api/batch?seed='+seed+'&total='+total+enabledSpecsQuery());
   const data=await res.json();
   batchFish=data.fish||[];
@@ -628,7 +777,7 @@ async function loadBatch(batchTotal){
 }
 
 function buildLayout(){
-  lanes={};laneList=[];modules={};
+  lanes={};laneList=[];modules={};boxSealTimers={};
   const defs=[{key:'A',x:520,y:105,title:'A模块：15P~40P'},{key:'B',x:520,y:562,title:'B模块：45P~90P'},{key:'C',x:520,y:1019,title:'C模块：100P~150P'}];
   for(const def of defs){
     modules[def.key]={key:def.key,x:def.x,y:def.y,title:def.title,specs:MODULE_SPECS[def.key],color:MODULE_COLOR[def.key],mergeX:1260,mergeY:def.y+210,busy:false,plan:null,box:{x:1385,y:def.y+170,count:0,weight:0,phase:'idle',sealTimer:0,finished:0}};
@@ -696,39 +845,42 @@ function bestDiagnosticForSpec(spec){
   return {kind:'good',msg:'接近可装',short:'接近',needBucket:null};
 }
 
-function laneDemandEntry(modKey,spec,bucket){
+function specDemandEntry(modKey,spec){
+  const address=specAddress(modKey,spec);
+  const rng=SPECS[spec]?SPECS[spec].range:[0,0];
+  const base={module:modKey,spec,address,laneId:spec,weight_ranges:[[rng[0],rng[1]]],target:'lane'};
   if(!isSpecEnabled(spec)){
-    return {module:modKey,spec,bucket,address:laneAddress(modKey,spec,bucket),priority:9,count:0,target:'lane',reason:'未启用',active:false};
+    return Object.assign({},base,{priority:9,count:0,reason:'未启用',active:false});
   }
-  const lane=lanes[spec+'_'+bucket];
   const mod=modules[modKey];
-  const address=laneAddress(modKey,spec,bucket);
-  const base={module:modKey,spec,bucket,address,laneId:lane.id};
-  if(mod.busy&&mod.plan&&mod.plan.spec===spec&&lane.releaseRemaining>0){
-    return Object.assign({},base,{priority:1,count:lane.releaseRemaining,target:'box',reason:'装箱工位缺鱼',active:true});
-  }
+  const total=BUCKETS.reduce((n,b)=>n+(lanes[spec+'_'+b]?.queue.length||0),0);
   const d=bestDiagnosticForSpec(spec);
-  const queued=lane.queue.length;
-  if(d.needBucket===bucket){
-    return Object.assign({},base,{priority:d.kind==='bad'?2:3,count:d.needCount||1,target:'lane',reason:d.short,active:true});
-  }
   if(mod.busy&&mod.plan&&mod.plan.spec===spec&&mod.box.phase!=='idle'){
-    const partKey=bucket==='light'?'light':bucket==='mid'?'mid':'heavy';
-    const need=Math.max(0,(mod.plan.parts[partKey]||0)-(mod.plan.released||0));
-    if(need>0&&queued===0){
-      return Object.assign({},base,{priority:2,count:need,target:'box',reason:'待出料进箱',active:true});
+    const need=Math.max(0,(mod.plan.count||0)-(mod.plan.released||0));
+    if(need>0){
+      return Object.assign({},base,{priority:1,count:need,target:'box',reason:'装箱工位缺鱼',active:true});
     }
   }
-  return Object.assign({},base,{priority:queued>0?4:5,count:queued||0,target:'lane',reason:queued>0?'料道'+queued+'条':'监控',active:queued>0||d.kind!=='good'});
+  if(d.short==='可装'){
+    return Object.assign({},base,{priority:4,count:0,reason:'可装',active:false});
+  }
+  if(d.short==='不足'){
+    return Object.assign({},base,{priority:2,count:d.needCount||1,reason:'不足',active:true});
+  }
+  if(d.short==='偏轻'||d.short==='偏重'||d.short==='等待'){
+    return Object.assign({},base,{priority:3,count:d.needCount||1,reason:d.short,active:true});
+  }
+  if(total>0){
+    return Object.assign({},base,{priority:4,count:1,reason:d.short||('料道'+total+'条'),active:d.short!=='接近'});
+  }
+  return Object.assign({},base,{priority:5,count:0,reason:'监控',active:false});
 }
 
 function collectDemands(){
   const list=[];
   for(const modKey of Object.keys(MODULE_SPECS)){
     for(const spec of MODULE_SPECS[modKey]){
-      for(const bucket of BUCKETS){
-        list.push(laneDemandEntry(modKey,spec,bucket));
-      }
+      list.push(specDemandEntry(modKey,spec));
     }
   }
   list.sort((a,b)=>a.priority-b.priority||a.address.localeCompare(b.address));
@@ -743,7 +895,39 @@ function fishIncomingToSpec(spec){
     (f.path[f.path.length-1].x>=bx-20||f.x>=bx-40)).length;
 }
 
+function boxStationStatusFromServer(spec){
+  const modKey=moduleOfSpec(spec);
+  const info=getModuleSpecInfo(spec);
+  const demand=getDemandForSpec(spec);
+  const seal=boxSealTimers[spec];
+  if(seal&&seal.until>simTime){
+    return {spec,modKey,phase:'封箱中',state:'sealing',progress:1,detail:seal.count+'尾/'+seal.weight+'g'};
+  }
+  const total=info?info.total:0;
+  const cap=info?info.total_capacity:specTotalCapacity(spec);
+  const reason=demand?demand.reason:'';
+  const incoming=fishIncomingToSpec(spec);
+  if(incoming>0){
+    return {spec,modKey,phase:'进箱中',state:'incoming',progress:0.25,detail:'在途 '+incoming};
+  }
+  if(reason==='可装'){
+    return {spec,modKey,phase:'待装箱',state:'wait',progress:Math.min(0.9,total/Math.max(1,cap)),detail:'可装 · 料道 '+total};
+  }
+  if(total>0){
+    const pct=Math.min(0.8,total/cap);
+    const detail=(reason?reason+' · ':'')+'料道 '+total+'/'+cap;
+    return {spec,modKey,phase:'待装箱',state:'wait',progress:pct,detail};
+  }
+  if(demand&&demand.active){
+    return {spec,modKey,phase:'等料',state:'idle',progress:0,detail:reason||'等首条鱼'};
+  }
+  return {spec,modKey,phase:'空闲',state:'idle',progress:0,detail:'—'};
+}
+
 function boxStationStatus(spec){
+  if(serverSessionActive()&&serverModules){
+    return boxStationStatusFromServer(spec);
+  }
   const modKey=moduleOfSpec(spec);
   const mod=modules[modKey];
   const queued=BUCKETS.reduce((n,b)=>n+lanes[spec+'_'+b].queue.length,0);
@@ -803,9 +987,10 @@ function getInletDemandForUI(){
 }
 
 function findMatchingDemand(item){
-  const mod=moduleOfSpec(item.spec),bucket=bucketOf(item.spec,item.weight);
+  const mod=moduleOfSpec(item.spec);
   const demands=getDemandsForUI();
-  return demands.find(d=>d.active&&d.module===mod&&d.spec===item.spec&&d.bucket===bucket)||null;
+  return demands.find(d=>d.active&&d.module===mod&&d.spec===item.spec
+    &&weightInRanges(item.weight,d.weight_ranges))||null;
 }
 
 function getInletDemand(){
@@ -814,22 +999,23 @@ function getInletDemand(){
 }
 
 function enqueueToLane(lane,f){
-  if(lane.queue.length>=capacityForSpec(lane.spec)){stats.fifoReflow++;return false}
+  if(totalQueuedForSpec(lane.spec)>=specTotalCapacity(lane.spec)){stats.fifoReflow++;return false}
   f.state='queued';f.enterTime=simTime;lane.queue.push(f);normalizeLane(lane);return true;
 }
 
-function laneFromDemand(demand){
-  const id=demand.laneId||demand.lane_id||(demand.spec&&demand.bucket?demand.spec+'_'+demand.bucket:null);
+function laneFromDemand(demand,item){
+  const bucket=item&&item.spec?bucketOf(item.spec,item.weight):'mid';
+  const id=demand.spec?demand.spec+'_'+bucket:null;
   return id?lanes[id]:null;
 }
 
 function routeToAddress(item,demand){
-  const lane=laneFromDemand(demand),mod=modules[demand.module];
+  const bucket=bucketOf(item.spec,item.weight);
+  const lane=laneFromDemand(demand,item),mod=modules[demand.module];
   if(!lane||!mod){
     spawnNormal(item);
     return;
   }
-  const bucket=bucketOf(item.spec,item.weight);
   const f=createFish(item.spec,item.weight,bucket,item.id);
   f.direct=true;stats.directRoute++;
   f.x=55;f.y=70;
@@ -858,7 +1044,7 @@ function spawnNormal(item){
   f.x=55;f.y=70;
   f.path=feedTrackToLane(lane);
   f.onDone=function(){
-    if(lane.queue.length>=capacityForSpec(item.spec)){stats.fifoReflow++;stats.overflow++;return}
+    if(totalQueuedForSpec(item.spec)>=specTotalCapacity(item.spec)){stats.fifoReflow++;stats.overflow++;return}
     f.state='queued';f.enterTime=simTime;lane.queue.push(f);normalizeLane(lane);
   };
   movingFish.push(f);
@@ -901,6 +1087,15 @@ function releaseOneFish(m,lane){
 
 function processModule(k,dtScaled){
   const m=modules[k];
+  if(serverSessionActive()){
+    if(m.box.phase==='sealing'){
+      m.box.sealTimer-=dtScaled;
+      if(m.box.sealTimer<=0){
+        m.busy=false;m.plan=null;m.box.phase='idle';m.box.count=0;m.box.weight=0;
+      }
+    }
+    return;
+  }
   if(!m.busy){
     const p=findBestPlanForModule(k);if(p){startPlan(k,p);return}
     return;
@@ -988,19 +1183,19 @@ function updateUI(){
   $('sDemand').textContent=activeN;
   const fromServer=serverDemands&&(running||finished);
   $('demandHint').textContent=fromServer
-    ? '(后端 t='+serverDemandTick+' · 活跃 '+activeN+' 路)'
-    : (running||finished?'(本地估算 · 活跃 '+activeN+' 路)':'(等待开始)');
+    ? '(后端 t='+serverDemandTick+' · 活跃 '+activeN+' 规格)'
+    : (running||finished?'(本地估算 · 活跃 '+activeN+' 规格)':'(等待开始)');
   const inlet=getInletDemandForUI();
   $('inletBanner').innerHTML=inlet
     ? '<strong>进料口广播地址：</strong><span class="demand-addr">'+inlet.address+'</span> 需要 '
-      +bucketLabel(inlet.bucket)+'鱼 × '+inlet.count+' <span class="pill info">'+inlet.reason+'</span>'
+      +inlet.count+' 条 · '+formatWeightRanges(inlet.weight_ranges)+' <span class="pill info">'+inlet.reason+'</span>'
       +(fromServer?' <span style="font-size:11px;color:#64748b">· 后端 t='+serverDemandTick+'</span>':'')
     : (fromServer?'暂无活跃需求，常规 FIFO 入料':'暂无优先需求，常规 FIFO 入料');
   $('demandPanel').innerHTML=activeList.length?activeList.map(d=>
     '<div class="demand-card'+(inlet&&inlet.address===d.address?' active':'')+'">'+
     '<span class="pill '+(d.priority<=2?'good':d.priority===3?'warn':'info')+'">P'+d.priority+'</span> '+
     '<span class="demand-addr">'+d.address+'</span><br>'+
-    bucketLabel(d.bucket)+' × '+d.count+' · '+d.reason+' · 目标:'+(d.target==='box'?'装箱工位':'料道')+
+    '× '+d.count+' · '+formatWeightRanges(d.weight_ranges)+' · '+d.reason+' · '+(d.target==='box'?'装箱工位':'料道')+
     '</div>').join(''):'<div style="color:#64748b;font-size:12px">'+(fromServer?'当前无活跃需求':'暂无需求')+'</div>';
   $('moduleState').innerHTML=renderBoxStations();
 }
@@ -1010,21 +1205,25 @@ function frame(ts){if(!lastTs)lastTs=ts;const dt=Math.min(.05,(ts-lastTs)/1000);
 async function resetLocal(){
   running=false;finished=false;lastTs=0;beltPhase=0;spawnTimer=0;simTime=0;cartonSeq=0;
   serverFinishedHandled=false;serverSessionKey='';serverInputCount=0;serverInputWeight=0;intakeSynced=false;
-  serverDemands=null;serverInletDemand=null;serverDemandTick=0;serverReflowStats=null;serverStorageStats=null;
+  serverDemands=null;serverInletDemand=null;serverDemandTick=0;serverReflowStats=null;serverStorageStats=null;serverCapFactor=null;
+  resetPollCursor();
   movingFish=[];stats={input:0,cartons:0,directRoute:0,outsideTail:0,fifoReflow:0,batchTail:0,overflow:0,timeout:0};
   batchIndex=0;
-  buildLayout();await loadBatch();updateUI();draw();
+  invalidateBatch();
+  buildLayout();updateUI();draw();
 }
 
 async function reset(){
   await apiJson('/api/stop');
   await resetLocal();
-  log('已重置，批次已加载。');
+  log('已重置，点击「开始」重新生成批次。');
 }
 
 async function fastRun(){
   running=false;
-  if(!batchLoaded)await loadBatch();
+  invalidateBatch();
+  resetPollCursor();
+  await loadBatch(getBatchTotal());
   const body=buildStartBody({speed:Math.max(getSpeed(),200)});
   const cur=await apiJson('/api/state');
   if(!cur.running){
@@ -1033,12 +1232,23 @@ async function fastRun(){
   }
   log('快速跑完：'+ (getStopMode()==='weight'?'目标 '+getTotalTons()+' t':'目标 '+getTotalFish()+' 条') +' · 后端加速运行…');
   while(true){
-    const state=await apiJson('/api/state');
+    const delta=await apiJson(statePollUrl());
+    const state=mergePollState(delta);
+    syncPollState=state;
+    if(delta.snapshot_delta){
+      handleNewCartons(delta.carton_records||[]);
+    }
+    syncServerModules(state);
     running=false;
     finished=!!state.finished;
     serverInputCount=state.input_count||0;
     stats.input=serverInputCount;
     syncRunProgressFromState(state);
+    if(state.demands){
+      serverDemands=state.demands;
+      serverInletDemand=state.inlet_demand||null;
+      serverDemandTick=state.tick||0;
+    }
     batchIndex=serverInputCount;
     intakeSynced=true;
     if(state.cartons!=null)stats.cartons=state.cartons;
@@ -1134,28 +1344,42 @@ function drawModule(m){
   }
   drawBox(m);
 }
+function serverLaneCounts(spec,bucket){
+  const info=getModuleSpecInfo(spec);
+  if(!info)return null;
+  const map={light:info.small,mid:info.medium,heavy:info.large};
+  return {lane:map[bucket]??0,total:info.total,cap:info.total_capacity};
+}
+
 function drawLane(lane,m){
   const dis=!isSpecEnabled(lane.spec);
   const cap=capacityForSpec(lane.spec);
+  const srv=serverSessionActive()&&serverLaneCounts(lane.spec,lane.bucket);
+  const laneN=srv?srv.lane:lane.queue.length;
+  const specTot=srv?srv.total:totalQueuedForSpec(lane.spec);
+  const specCap=srv?srv.cap:specTotalCapacity(lane.spec);
   roundRect(m.x+112,lane.y-8,30,16,8,dis?'#e2e8f0':BUCKET_COLOR[lane.bucket],'#94a3b8',1);
   ctx.fillStyle=dis?'#94a3b8':'#0f172a';ctx.font='bold 11px Arial';ctx.fillText(bucketLabel(lane.bucket),m.x+118,lane.y+4);
   const br=BUCKET_RANGES[lane.spec],rule=UI_BUCKET_TO_RULE[lane.bucket];
   if(br&&br[rule]&&!dis){ctx.font='9px Arial';ctx.fillStyle='#64748b';ctx.fillText(br[rule][0]+'-'+br[rule][1],m.x+118,lane.y+14)}
   drawConv(lane.x1,lane.y-8,lane.x2-lane.x1,16,true,dis?'#f1f5f9':'#dcfce7',dis?'#e2e8f0':'#bbf7d0',null);
-  ctx.fillStyle='#64748b';ctx.font='10px Arial';ctx.fillText(lane.queue.length+'/'+cap,lane.x1+4,lane.y-11);
+  ctx.fillStyle='#64748b';ctx.font='10px Arial';
+  ctx.fillText(laneN+'/'+cap+' · Σ'+specTot+'/'+specCap,lane.x1+4,lane.y-11);
 }
 function drawGate(lane){const x=lane.x2+8,y=lane.y-10;roundRect(x,y,24,20,5,lane.gateOpen?'#dcfce7':'#f1f5f9',lane.gateOpen?'#16a34a':'#94a3b8',1)}
 function drawBox(m){
   const b=m.box,x=b.x,y=b.y;
   roundRect(x,y,145,88,14,'#fffbeb','#fcd34d',1.2);
   ctx.fillStyle='#8d5b00';ctx.font='bold 14px Arial';ctx.fillText('装箱工位',x+12,y+20);
-  const txt=m.plan?specName(m.plan.spec)+' '+b.count+'/'+m.plan.count:'等待';
+  const sealing=m.box.phase==='sealing'&&m.plan;
+  const txt=sealing?specName(m.plan.spec)+' 封箱中':(m.plan?specName(m.plan.spec)+' '+b.count+'/'+m.plan.count:'等待');
   ctx.fillStyle='#5d4a2b';ctx.font='12px Arial';ctx.fillText(txt,x+82,y+38);
   roundRect(x+82,y+48,50,9,5,'#fde68a','#f6c453',1);
-  if(m.plan)roundRect(x+82,y+48,50*(b.count/Math.max(1,m.plan.count)),9,5,'#f59e0b','#f59e0b',1);
-  ctx.fillText(b.weight+'g',x+82,y+68);
+  if(sealing||m.plan)roundRect(x+82,y+48,50*(sealing?1:(b.count/Math.max(1,m.plan.count))),9,5,'#f59e0b','#f59e0b',1);
+  ctx.fillText(sealing?m.box.weight+'g':b.weight+'g',x+82,y+68);
   roundRect(x+175,y,100,88,14,'#eff6ff','#93c5fd',1.2);
-  ctx.fillStyle='#1d4ed8';ctx.font='bold 13px Arial';ctx.fillText('成品 '+b.finished+'箱',x+188,y+48);
+  const finishedN=serverSessionActive()?m.box.finished:b.finished;
+  ctx.fillStyle='#1d4ed8';ctx.font='bold 13px Arial';ctx.fillText('成品 '+finishedN+'箱',x+188,y+48);
 }
 function drawTail(){
   roundRect(1480,1310,215,88,16,'#fff7ed','#fdba74',1.5);
@@ -1192,12 +1416,12 @@ window.addEventListener('load',async function(){
   if(location.hash==='#stats')setActiveView('stats');
   $('speedInput').addEventListener('input',scheduleSpeedSync);
   $('speedInput').addEventListener('change',scheduleSpeedSync);
-  $('stopMode').addEventListener('change',()=>{updateStopModeUI();loadBatch().catch(e=>console.error(e))});
-  $('totalFish').addEventListener('change',()=>{if(getStopMode()==='count')loadBatch().catch(e=>console.error(e))});
-  $('totalTons').addEventListener('change',()=>{if(getStopMode()==='weight')loadBatch().catch(e=>console.error(e))});
+  $('stopMode').addEventListener('change',()=>{if(running||finished){log('运行中无法切换结束条件');return}updateStopModeUI();invalidateBatch()});
+  $('totalFish').addEventListener('change',()=>{if(!running&&!finished)invalidateBatch()});
+  $('totalTons').addEventListener('change',()=>{if(!running&&!finished)invalidateBatch()});
+  $('seedInput').addEventListener('change',()=>{if(!running&&!finished)invalidateBatch()});
   updateStopModeUI();
   $('startBtn').onclick=async()=>{
-    if(!batchLoaded)await loadBatch();
     const cur=await apiJson('/api/state');
     if(cur.running){
       if(cur.paused){
@@ -1211,6 +1435,9 @@ window.addEventListener('load',async function(){
       }
       return;
     }
+    invalidateBatch();
+    resetPollCursor();
+    await loadBatch(getBatchTotal());
     const body=buildStartBody();
     const res=await apiJson('/api/start',body);
     if(!res.ok){log(res.error||'启动失败');return}
@@ -1236,6 +1463,8 @@ window.addEventListener('load',async function(){
     if(cfg.default_enabled_specs)setEnabledSpecs(cfg.default_enabled_specs);
     if(cfg.default_stop_weight_tons!=null)$('totalTons').value=cfg.default_stop_weight_tons;
     if(cfg.default_stop_mode)$('stopMode').value=cfg.default_stop_mode;
+    applySpecCountsFromConfig(cfg);
+    if(cfg.default_cap_factor!=null)$('capacityFactor').value=cfg.default_cap_factor;
     updateStopModeUI();
     if(applyBucketRangesFromConfig(cfg)){
       log('小中大区间已同步：'+ (cfg.bucket_rules_source||'plan/细分规则.py'));
@@ -1248,8 +1477,8 @@ window.addEventListener('load',async function(){
     await applyServerState(state,true);
     log(state.finished?'已接入已完成批次':'已接入运行中的模拟');
   }else{
-    await loadBatch();
     updateUI();
+    log('就绪：默认按条数 25000 或按总重 10t · 点击「开始」生成批次并启动');
   }
   startSyncPoll();
   requestAnimationFrame(frame);
