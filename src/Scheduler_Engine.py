@@ -326,9 +326,11 @@ class Stats:
     timeout_tail: int = 0
     overflow_reflow: int = 0
     storage_in: int = 0
+    storage_to_lane: int = 0
     storage_packed: int = 0
     storage_timeout_tail: int = 0
     storage_full_tail: int = 0
+    storage_batch_tail: int = 0
     unmatched_count: int = 0
     tail_count: int = 0
 
@@ -1420,9 +1422,11 @@ class SchedulerEngine:
                 "by_spec": storage_by_spec,
             },
             "storage_in": self.stats.storage_in,
+            "storage_to_lane": self.stats.storage_to_lane,
             "storage_packed": self.stats.storage_packed,
             "storage_timeout_tail": self.stats.storage_timeout_tail,
             "storage_full_tail": self.stats.storage_full_tail,
+            "storage_batch_tail": self.stats.storage_batch_tail,
             "modules": modules,
             "recent_cartons": recent_cartons,
             "carton_records": carton_records,
@@ -1670,6 +1674,7 @@ class SchedulerEngine:
             )
             if moved:
                 released += len(moved)
+                self.stats.storage_to_lane += len(moved)
                 self._log(
                     f"暂存出库: {len(moved)}条 → {spec.upper()} "
                     f"区间 {ranges} ({demand.get('reason', '')})",
@@ -2015,6 +2020,8 @@ class SchedulerEngine:
                 for fish in self.lanes.queues[spec][bucket]:
                     self.tracker.mark_unmatched(fish, "unmatched_tail", tick=self.tick)
                     self.stats.tail_count += 1
+        if self.lanes.storage:
+            self.stats.storage_batch_tail += len(self.lanes.storage)
         for fish in list(self.lanes.storage):
             self.tracker.mark_unmatched(fish, "unmatched_storage", tick=self.tick)
             self.stats.tail_count += 1
@@ -2070,9 +2077,11 @@ class SchedulerEngine:
         print(f"  规格外       : {self.stats.outside_count}")
         print(f"  回流总次数   : {self.stats.reflow_count} (历史回流队列)")
         print(f"    暂存入箱   : {self.stats.storage_in}")
-        print(f"    暂存出箱   : {self.stats.storage_packed}")
+        print(f"    暂存回道   : {self.stats.storage_to_lane}")
+        print(f"    暂存成盒   : {self.stats.storage_packed}")
         print(f"    暂存超时   : {self.stats.storage_timeout_tail}")
         print(f"    暂存箱满   : {self.stats.storage_full_tail}")
+        print(f"    暂存批末   : {self.stats.storage_batch_tail}")
         print(f"    料道超时   : {self.stats.timeout_tail}")
         print(f"  未匹配/尾料  : {self.stats.unmatched_count}")
         print(f"    批末尾料   : {self.stats.tail_count}")

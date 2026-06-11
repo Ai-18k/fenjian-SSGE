@@ -1004,7 +1004,7 @@
       $("sReflowHint").textContent = `超容→暂存 · 箱内 ${storage.count ?? 0} · 超时尾料 ${state.timeout_tail ?? 0} · 阈值${mt}s`;
       $("sOutside").textContent = state.outside_count ?? 0;
       $("sStorage").textContent = storage.count ?? 0;
-      $("sStorageHint").textContent = `${storage.count ?? 0} / ${storage.capacity ?? 150} · 入${state.storage_in ?? 0} 出${state.storage_packed ?? 0}`;
+      $("sStorageHint").textContent = `${storage.count ?? 0} / ${storage.capacity ?? 150} · 入${state.storage_in ?? 0} · 回道${state.storage_to_lane ?? 0} · 成盒${state.storage_packed ?? 0}${(state.storage_timeout_tail ?? 0) ? " · 超时" + state.storage_timeout_tail : ""}`;
       $("sUnmatched").textContent = state.unmatched_count ?? 0;
       $("sReflowQ").textContent = state.reflow_queue ?? 0;
 
