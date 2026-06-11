@@ -183,10 +183,13 @@ from Scheduler_Engine import (
     DEFAULT_SEED,
     DEFAULT_STOP_WEIGHT_G,
     DEFAULT_STOP_WEIGHT_TONS,
+    DEFAULT_TIMEOUT_CLOCK,
     DEFAULT_TOTAL,
     DEFAULT_STORAGE_CAPACITY,
     STOP_MODE_COUNT,
     STOP_MODE_WEIGHT,
+    TIMEOUT_CLOCK_INTAKE,
+    TIMEOUT_CLOCK_REAL,
     FishTrace,
     MODULE_SPECS,
     SPECS,
@@ -267,7 +270,7 @@ class SimulationRunner:
                 since_overflow_reflow=since_overflow_reflow,
             )
             if self.running and not self.paused and not self.engine.finished:
-                self.engine._sync_tick()
+                self.engine.refresh_tick_for_poll()
                 snap["tick"] = self.engine.tick
             snap["status"] = "finished" if self.engine.finished else ("paused" if self.paused else "running")
             snap["running"] = self.running
@@ -286,10 +289,13 @@ class SimulationRunner:
         enabled_specs: tuple[str, ...] | list[str] | None = None,
         stop_mode: str = STOP_MODE_COUNT,
         stop_weight_g: int = DEFAULT_STOP_WEIGHT_G,
+        timeout_clock: str = DEFAULT_TIMEOUT_CLOCK,
     ) -> None:
         enabled = parse_enabled_specs(enabled_specs)
         if stop_mode not in (STOP_MODE_COUNT, STOP_MODE_WEIGHT):
             stop_mode = STOP_MODE_COUNT
+        if timeout_clock not in (TIMEOUT_CLOCK_INTAKE, TIMEOUT_CLOCK_REAL):
+            timeout_clock = DEFAULT_TIMEOUT_CLOCK
         stop_count = max(1, total)
         batch_total = batch_total_for_run(stop_mode, stop_count, stop_weight_g)
         with self.lock:
@@ -316,6 +322,7 @@ class SimulationRunner:
                 stop_mode=stop_mode,
                 stop_count=stop_count,
                 stop_weight_g=stop_weight_g,
+                timeout_clock=timeout_clock,
             )
             self.running = True
 
@@ -577,6 +584,11 @@ class Handler(BaseHTTPRequestHandler):
                     "default_stop_weight_tons": DEFAULT_STOP_WEIGHT_TONS,
                     "default_storage_capacity": DEFAULT_STORAGE_CAPACITY,
                     "default_move_timeout": DEFAULT_MOVE_TIMEOUT,
+                    "default_timeout_clock": DEFAULT_TIMEOUT_CLOCK,
+                    "timeout_clock_options": [
+                        {"value": TIMEOUT_CLOCK_INTAKE, "label": "进料步进"},
+                        {"value": TIMEOUT_CLOCK_REAL, "label": "真实时间"},
+                    ],
                     "default_cap_factor": DEFAULT_CAP_FACTOR,
                     "default_enabled_specs": list(DEFAULT_ENABLED_SPECS),
                     "all_specs": list(ALL_SPECS),
@@ -692,6 +704,9 @@ class Handler(BaseHTTPRequestHandler):
                 stop_weight_tons = float(
                     body.get("stop_weight_tons", DEFAULT_STOP_WEIGHT_TONS)
                 )
+                timeout_clock = str(
+                    body.get("timeout_clock", DEFAULT_TIMEOUT_CLOCK)
+                )
                 RUNNER.start(
                     seed=int(body.get("seed", DEFAULT_SEED)),
                     total=int(body.get("total", DEFAULT_TOTAL)),
@@ -701,6 +716,7 @@ class Handler(BaseHTTPRequestHandler):
                     enabled_specs=body.get("enabled_specs"),
                     stop_mode=stop_mode,
                     stop_weight_g=int(stop_weight_tons * 1_000_000),
+                    timeout_clock=timeout_clock,
                 )
                 return self._json({"ok": True, "state": RUNNER.get_state()})
             except Exception as exc:

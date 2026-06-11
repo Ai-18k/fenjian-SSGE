@@ -106,7 +106,8 @@
     <label id="stopWeightWrap" style="display:none">目标总重(吨)<input id="totalTons" type="number" value="10" min="0.1" step="0.1"></label>
     <label>速度<input id="speedInput" type="number" value="8" min="1" max="500"></label>
     <label>料道扩容(+N)<input id="capacityFactor" type="number" value="1" min="1" title="三合一合计 = min(装箱尾数) + N"></label>
-    <label>队首超时(s)<input id="headTimeout" type="number" value="0"></label>
+    <label>队首超时<input id="headTimeout" type="number" value="0" min="0" title="阈值单位随「超时计时」：进料步进=步，真实时间=秒"></label>
+    <label>超时计时<select id="timeoutClock"><option value="intake" selected>进料步进</option><option value="real">真实时间</option></select></label>
     <label>显示模式<select id="drawMode"><option value="normal">正常</option><option value="light">轻量</option></select></label>
     <button class="good" id="startBtn">开始</button>
     <button class="secondary" id="pauseBtn">暂停</button>
@@ -794,6 +795,7 @@ function buildStartBody(extra){
     seed:Number($('seedInput').value||42),
     total:weightMode?getBatchTotal():getTotalFish(),
     move_timeout:getHeadTimeout(),
+    timeout_clock:getTimeoutClock(),
     cap_factor:getCapFactor(),
     speed:getSpeed(),
     enabled_specs:getEnabledSpecs(),
@@ -839,6 +841,8 @@ function syncRunProgressFromState(state){
     serverCapFactor=state.cap_factor;
     $('capacityFactor').value=state.cap_factor;
   }
+  if(state.move_timeout!=null)$('headTimeout').value=state.move_timeout;
+  if(state.timeout_clock)$('timeoutClock').value=state.timeout_clock;
   serverStopMode=state.stop_mode||serverStopMode;
   if(state.stop_target_count!=null)serverStopTargetCount=state.stop_target_count;
   if(state.stop_target_weight_tons!=null)serverStopTargetTons=state.stop_target_weight_tons;
@@ -861,6 +865,7 @@ function getCapFactor(){
   return Math.max(1,Number($('capacityFactor').value||1));
 }
 function getHeadTimeout(){return Math.max(0,Number($('headTimeout').value||0))}
+function getTimeoutClock(){return $('timeoutClock').value||'intake'}
 function specName(s){return String(s).toUpperCase()}
 function bucketLabel(b){return b==='light'?'小':b==='mid'?'中':'大'}
 function moduleOfSpec(spec){for(const k of Object.keys(MODULE_SPECS))if(MODULE_SPECS[k].includes(spec))return k;return 'A'}
@@ -1738,6 +1743,7 @@ window.addEventListener('load',async function(){
     if(cfg.default_stop_mode)$('stopMode').value=cfg.default_stop_mode;
     applySpecCountsFromConfig(cfg);
     if(cfg.default_cap_factor!=null)$('capacityFactor').value=cfg.default_cap_factor;
+    if(cfg.default_timeout_clock)$('timeoutClock').value=cfg.default_timeout_clock;
     updateStopModeUI();
     if(applyBucketRangesFromConfig(cfg)){
       log('小中大区间已同步：'+ (cfg.bucket_rules_source||'plan/细分规则.py'));

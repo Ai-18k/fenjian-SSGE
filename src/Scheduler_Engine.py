@@ -91,6 +91,9 @@ STOP_MODE_COUNT = "count"
 STOP_MODE_WEIGHT = "weight"
 DEFAULT_STOP_WEIGHT_TONS = 10.0
 DEFAULT_STOP_WEIGHT_G = int(DEFAULT_STOP_WEIGHT_TONS * 1_000_000)
+TIMEOUT_CLOCK_INTAKE = "intake"
+TIMEOUT_CLOCK_REAL = "real"
+DEFAULT_TIMEOUT_CLOCK = TIMEOUT_CLOCK_INTAKE
 
 
 def batch_total_for_run(
@@ -1142,6 +1145,7 @@ class SchedulerEngine:
         stop_mode: str = STOP_MODE_COUNT,
         stop_count: int = DEFAULT_TOTAL,
         stop_weight_g: int = DEFAULT_STOP_WEIGHT_G,
+        timeout_clock: str = DEFAULT_TIMEOUT_CLOCK,
     ):
         """作用：初始化引擎（批次、料道、追踪器、统计）；POST /api/start 时创建。
         前端：index/fifo_monitor「开始模拟」；控制种子、条数/总重、超时、启用规格、料道容量倍率。"""
@@ -1155,6 +1159,11 @@ class SchedulerEngine:
         self.stop_mode = stop_mode if stop_mode in (STOP_MODE_COUNT, STOP_MODE_WEIGHT) else STOP_MODE_COUNT
         self.stop_count = max(1, stop_count)
         self.stop_weight_g = max(1, stop_weight_g)
+        self.timeout_clock = (
+            timeout_clock
+            if timeout_clock in (TIMEOUT_CLOCK_INTAKE, TIMEOUT_CLOCK_REAL)
+            else DEFAULT_TIMEOUT_CLOCK
+        )
 
         self.batch = batch_records or load_or_generate_batch(seed=seed)
         self.total_fish = len(self.batch)
@@ -1177,13 +1186,25 @@ class SchedulerEngine:
         self.timeout_tail_log: list[dict] = []
         self.overflow_reflow_log: list[dict] = []
 
-    def _sync_tick(self) -> int:
-        """作用：用真实经过时间（秒）更新 tick，与入料条数解耦；暂停期间冻结。
-        前端：GET /api/state.tick；fifo_monitor 需求广播「后端 t=」；超时回流阈值计时。"""
+    def _sync_real_tick(self) -> int:
+        """真实系统时间（秒）更新 tick；暂停期间冻结。"""
         now = time.monotonic()
         if self._paused_at is not None:
             now = self._paused_at
         self.tick = int(max(0, now - self._time_origin))
+        return self.tick
+
+    def _advance_tick(self, steps: int = 1) -> int:
+        """按计时方式推进 tick：进料步进=每处理一步 +1；真实时间=墙钟秒。"""
+        if self.timeout_clock == TIMEOUT_CLOCK_REAL:
+            return self._sync_real_tick()
+        self.tick += max(1, steps)
+        return self.tick
+
+    def refresh_tick_for_poll(self) -> int:
+        """轮询快照时刷新 tick（仅真实时间模式随墙钟增长）。"""
+        if self.timeout_clock == TIMEOUT_CLOCK_REAL:
+            return self._sync_real_tick()
         return self.tick
 
     def pause_clock(self) -> None:
@@ -1420,6 +1441,7 @@ class SchedulerEngine:
             "finished": self.finished,
             "seed": self.seed,
             "move_timeout": self.move_timeout,
+            "timeout_clock": self.timeout_clock,
             "cap_factor": self.cap_factor,
             "enabled_specs": list(self.specs),
             "stop_mode": self.stop_mode,
@@ -1959,7 +1981,7 @@ class SchedulerEngine:
         if self._cursor >= self.total_fish or self._intake_complete():
             return False
 
-        self._sync_tick()
+        self._advance_tick(1)
         record = self.batch[self._cursor]
         self._cursor += 1
         self.stats.input_count += 1
@@ -2036,7 +2058,7 @@ class SchedulerEngine:
         """作用：批末扫尾（继续封箱+回流）→标记尾料→写 CSV 报告→finished=true。
         前端：两页批末状态；index「成盒/尾料/报告」；fifo_monitor 快速跑完与尾料箱最终数。"""
         for _ in range(5000):
-            self._sync_tick()
+            self._advance_tick(1)
             before = self.stats.cartons
             self._process_reflow_intake()
             self._release_storage_by_demands()
@@ -2135,7 +2157,16 @@ class SchedulerEngine:
         print(f"  分拣规格   : {len(self.specs)} 个 ({', '.join(s.upper() for s in self.specs[:3])} …)")
         print(f"  模块批次   : A/B/C 共 {len(MODULE_SPECS)} 组")
         print(f"  盒重目标   : {TARGET_MIN}-{TARGET_MAX}g")
-        print(f"  移动超时   : {self.move_timeout}s (超出则直接记为尾料，不进回流)")
+        clock_label = (
+            "进料步进"
+            if self.timeout_clock == TIMEOUT_CLOCK_INTAKE
+            else "真实时间"
+        )
+        unit = "步" if self.timeout_clock == TIMEOUT_CLOCK_INTAKE else "s"
+        print(
+            f"  移动超时   : {self.move_timeout}{unit} "
+            f"({clock_label}计时，超出则直接记为尾料，不进回流)"
+        )
         print(f"  入料间隔   : {self.interval}s")
         print("-" * 60)
 
@@ -2184,7 +2215,13 @@ def main() -> None:
         "--move-timeout",
         type=int,
         default=DEFAULT_MOVE_TIMEOUT,
-        help="料道移动超时秒数，超出回流",
+        help="料道移动超时阈值（步或秒，见 --timeout-clock）",
+    )
+    parser.add_argument(
+        "--timeout-clock",
+        choices=[TIMEOUT_CLOCK_INTAKE, TIMEOUT_CLOCK_REAL],
+        default=DEFAULT_TIMEOUT_CLOCK,
+        help="超时计时：intake=每入料一步+1；real=真实系统秒",
     )
     parser.add_argument("--csv", type=Path, default=None, help="指定种子 CSV 路径")
     parser.add_argument("--fast", action="store_true", help="快速跑完（不等待）")
@@ -2200,6 +2237,7 @@ def main() -> None:
         move_timeout=args.move_timeout,
         verbose=args.verbose,
         log_every=args.log_every,
+        timeout_clock=args.timeout_clock,
     )
     engine.run(realtime=not args.fast)
 
