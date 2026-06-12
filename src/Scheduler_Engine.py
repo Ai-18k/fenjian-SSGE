@@ -130,7 +130,19 @@ dfs_find_best_from_items = _depth_search.dfs_find_best_from_items
 BoxDemandCalculator = _demand_calc.BoxDemandCalculator
 _intersect_interval = _demand_calc.intersect_interval
 DFS_MAX_BUFFER = _depth_search.DEFAULT_DFS_MAX_BUFFER
+DFS_MAX_NODES = _depth_search.DEFAULT_DFS_MAX_NODES
 DFS_WINDOW_PER_BUCKET = 15
+
+
+def dfs_max_buffer_for_spec(spec: str) -> int:
+    """DFS 搜索窗口上限：小规格用默认 42；100p+ 需覆盖最大装箱尾数（如 150p→76）。"""
+    counts = SPECS[spec]["counts"]
+    return max(DFS_MAX_BUFFER, max(counts) + 5)
+
+
+def dfs_window_per_bucket_for_spec(spec: str) -> int:
+    """料道积压时各路取样条数，须能凑够该规格最小装箱尾数。"""
+    return max(DFS_WINDOW_PER_BUCKET, math.ceil(dfs_max_buffer_for_spec(spec) / 3))
 
 BUCKET_RANGES = {}
 for spec in ALL_SPECS:
@@ -1066,12 +1078,14 @@ class BoxPlanner:
         buf = lanes.storage_for_spec(spec)
         q = lanes.queues[spec]
         lane_total = lanes.total_in_spec(spec)
-        if lane_total + len(buf) <= DFS_MAX_BUFFER:
+        max_buf = dfs_max_buffer_for_spec(spec)
+        if lane_total + len(buf) <= max_buf:
             for bucket in BUCKETS:
                 buf.extend(q[bucket])
             return buf
+        window = dfs_window_per_bucket_for_spec(spec)
         for bucket in BUCKETS:
-            buf.extend(q[bucket][:DFS_WINDOW_PER_BUCKET])
+            buf.extend(q[bucket][:window])
         return buf
 
     @staticmethod
@@ -1096,7 +1110,13 @@ class BoxPlanner:
             return None
 
         buffer = self._dfs_search_buffer(lanes, spec)
-        result = dfs_find_best_from_items(buffer, spec, max_buffer=DFS_MAX_BUFFER + 3)
+        max_buf = dfs_max_buffer_for_spec(spec)
+        result = dfs_find_best_from_items(
+            buffer,
+            spec,
+            max_buffer=max_buf,
+            max_nodes=max(DFS_MAX_NODES, max_buf * 8000),
+        )
         if result:
             indices, count, weight = result
             return self._plan_from_indices(buffer, spec, indices, count, weight)
