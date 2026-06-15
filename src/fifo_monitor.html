@@ -349,14 +349,16 @@ function storageBalanceDelta(st){
 }
 
 function formatStorageStatsHint(st,finished){
-  if(!st)return '0 / 150 · 需求匹配';
+  if(!st)return '0 / 150 · 峰值 0 · 需求匹配';
   const parts=['入'+st.storageIn,'回道'+st.storageToLane,'成盒'+st.storagePacked];
   if(st.storageTimeout)parts.push('超时'+st.storageTimeout);
   if(st.storageFull)parts.push('箱满'+st.storageFull);
   if(st.storageBatchTail)parts.push('批末'+st.storageBatchTail);
   const delta=storageBalanceDelta(st);
   if(delta!==0)parts.push('差'+delta);
-  return st.count+' / '+st.capacity+' · '+parts.join(' · ');
+  const peak=st.storageMax!=null?st.storageMax:0;
+  const peakTxt='峰值 '+peak+(st.capacity?' / '+st.capacity:'');
+  return st.count+' / '+st.capacity+' · '+peakTxt+' · '+parts.join(' · ');
 }
 
 function syncServerStorageStats(state){
@@ -368,6 +370,7 @@ function syncServerStorageStats(state){
   serverStorageStats={
     count:box.count??0,
     capacity:box.capacity??150,
+    storageMax:state.storage_max??box.max??0,
     bySpec:box.by_spec||{},
     storageIn:state.storage_in??0,
     storageToLane:state.storage_to_lane??0,
@@ -734,7 +737,9 @@ async function applyServerState(state,allowSkip){
     intakeSynced=true;
     let tail=0;for(const lane of laneList)tail+=lane.queue.length;
     stats.batchTail=tail;
-    log('批末完成（与统计面板同步）：'+formatProgressHint(state.input_count||0,state.input_weight||0,state));
+    const peak=serverStorageStats&&serverStorageStats.storageMax!=null?serverStorageStats.storageMax:0;
+    log('批末完成（与统计面板同步）：'+formatProgressHint(state.input_count||0,state.input_weight||0,state)
+      +(peak>0?' · 暂存峰值 '+peak+'/'+(serverStorageStats?serverStorageStats.capacity:150):''));
   }
   if(!state.finished)serverFinishedHandled=false;
 }
@@ -778,9 +783,15 @@ function $(id){return document.getElementById(id)}
 function getStopMode(){return $('stopMode').value||'count'}
 function getTotalFish(){return Math.max(1,Number($('totalFish').value||25000))}
 function getTotalTons(){return Math.max(0.1,Number($('totalTons').value||10))}
+function getMinEnabledFishWeight(){
+  const specs=getEnabledSpecs();
+  if(!specs.length)return 65;
+  return Math.min(...specs.map(s=>SPECS[s].range[0]));
+}
 function getBatchTotal(){
   if(getStopMode()==='weight'){
-    const estimated=Math.ceil(getTotalTons()*1000000/250)+5000;
+    const minW=getMinEnabledFishWeight();
+    const estimated=Math.ceil(getTotalTons()*1e6/minW*1.02)+5000;
     return Math.max(25000,estimated);
   }
   return getTotalFish();
@@ -1470,7 +1481,9 @@ async function fastRun(){
     syncServerReflowStats(state);
     if(state.finished&&!serverFinishedHandled){
       serverFinishedHandled=true;
-      log('批末完成（与统计面板同步）：'+formatProgressHint(serverInputCount,state.input_weight||0,state));
+      log('批末完成（与统计面板同步）：'+formatProgressHint(serverInputCount,state.input_weight||0,state)
+        +((serverStorageStats&&serverStorageStats.storageMax>0)
+          ?(' · 暂存峰值 '+serverStorageStats.storageMax+'/'+serverStorageStats.capacity):''));
     }
     updateUI();
     if(state.finished)break;
@@ -1517,12 +1530,22 @@ function drawStorageBox(){
   const pct=cap>0?Math.min(100,Math.round(n/cap*100)):0;
   ctx.font='14px Arial,"Microsoft YaHei"';ctx.fillStyle='#c2410c';
   ctx.fillText('占用 '+pct+'%',inner+innerW-pad+8,countTop+58);
+  const peak=serverStorageStats&&serverStorageStats.storageMax!=null?serverStorageStats.storageMax:0;
+  if(peak>0){
+    ctx.font='13px Arial,"Microsoft YaHei"';ctx.fillStyle='#9a3412';
+    ctx.fillText('峰值 '+peak,inner+innerW-pad+8,countTop+78);
+  }
   ctx.textAlign='left';
-  const barX=inner+pad-8,barY=countTop+78,barW=innerW-(pad-8)*2,barH=9;
+  const barX=inner+pad-8,barY=countTop+(peak>0?88:78),barW=innerW-(pad-8)*2,barH=9;
   roundRect(barX,barY,barW,barH,5,'#fde68a','#fbbf24',1);
   if(n>0)roundRect(barX,barY,Math.max(6,barW*fill),barH,5,'#f97316','#ea580c',1);
+  if(peak>0&&cap>0){
+    const peakX=barX+Math.min(barW,Math.max(2,barW*peak/cap))-1;
+    ctx.strokeStyle='#7c2d12';ctx.lineWidth=2;
+    ctx.beginPath();ctx.moveTo(peakX,barY-2);ctx.lineTo(peakX,barY+barH+2);ctx.stroke();
+  }
 
-  let statsTop=countTop+108;
+  let statsTop=countTop+(peak>0?118:108);
   if(serverStorageStats){
     const st=serverStorageStats;
     const tailN=(st.storageTimeout||0)+(st.storageFull||0)+(st.storageBatchTail||0);

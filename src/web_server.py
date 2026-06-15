@@ -297,7 +297,9 @@ class SimulationRunner:
         if timeout_clock not in (TIMEOUT_CLOCK_INTAKE, TIMEOUT_CLOCK_REAL):
             timeout_clock = DEFAULT_TIMEOUT_CLOCK
         stop_count = max(1, total)
-        batch_total = batch_total_for_run(stop_mode, stop_count, stop_weight_g)
+        batch_total = batch_total_for_run(
+            stop_mode, stop_count, stop_weight_g, enabled_specs=enabled
+        )
         with self.lock:
             if self.running:
                 raise RuntimeError("模拟已在运行")
@@ -557,6 +559,10 @@ class Handler(BaseHTTPRequestHandler):
                 stop_mode=stop_mode,
                 stop_weight_g=stop_weight_g,
             )
+            if stop_mode == STOP_MODE_WEIGHT:
+                fish_payload = records
+            else:
+                fish_payload = records[:total]
             payload = [
                 {
                     "id": r.id,
@@ -564,12 +570,13 @@ class Handler(BaseHTTPRequestHandler):
                     "spec": r.spec or "",
                     "outside": bool(r.outside),
                 }
-                for r in records[:total]
+                for r in fish_payload
             ]
             return self._json(
                 {
                     "seed": seed,
                     "total": len(payload),
+                    "batch_total": len(records),
                     "enabled_specs": list(enabled),
                     "fish": payload,
                 }

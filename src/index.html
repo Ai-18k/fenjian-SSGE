@@ -425,6 +425,8 @@
     const BUCKET_LABEL = { small: "小", medium: "中", large: "大" };
 
     let pollTimer = null;
+    let specRanges = {};
+    let defaultEnabledSpecs = ["15p", "20p", "25p", "30p", "35p", "40p"];
     let lastEventCount = 0;
     let seenEventKeys = new Set();
     let lastState = null;
@@ -710,12 +712,26 @@
       return clock === "real" ? "s" : "步";
     }
 
-    function getBatchTotal() {
+    function getBatchTotal(enabledSpecs) {
       if (getStopMode() === "weight") {
-        const estimated = Math.ceil(getTotalTons() * 1_000_000 / 250) + 5000;
+        const specs = enabledSpecs || getEnabledSpecsForBatch();
+        const mins = specs.map(s => (specRanges[s] || [250, 250])[0]);
+        const minW = mins.length ? Math.min(...mins) : 65;
+        const estimated = Math.ceil(getTotalTons() * 1_000_000 / minW * 1.02) + 5000;
         return Math.max(25000, estimated);
       }
       return Math.max(1, +($("total").value || 25000));
+    }
+
+    function getEnabledSpecsForBatch() {
+      try {
+        const saved = sessionStorage.getItem("enabled_specs");
+        if (saved) {
+          const parsed = JSON.parse(saved);
+          if (Array.isArray(parsed) && parsed.length) return parsed;
+        }
+      } catch (_) {}
+      return defaultEnabledSpecs;
     }
 
     function updateStopModeUI() {
@@ -762,7 +778,7 @@
       const weightMode = getStopMode() === "weight";
       return {
         seed: +$("seed").value,
-        total: weightMode ? getBatchTotal() : +$("total").value,
+        total: weightMode ? getBatchTotal(enabledSpecs) : +$("total").value,
         move_timeout: +$("moveTimeout").value,
         timeout_clock: getTimeoutClock(),
         speed: +$("speed").value,
@@ -1147,6 +1163,8 @@
       if (cfg.default_stop_mode) $("stopMode").value = cfg.default_stop_mode;
       $("moveTimeout").value = cfg.default_move_timeout;
       if (cfg.default_timeout_clock) $("timeoutClock").value = cfg.default_timeout_clock;
+      specRanges = cfg.spec_ranges || {};
+      defaultEnabledSpecs = cfg.default_enabled_specs || defaultEnabledSpecs;
       updateStopModeUI();
     });
     if (pollTimer) clearTimeout(pollTimer);

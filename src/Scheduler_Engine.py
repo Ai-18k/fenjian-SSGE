@@ -100,11 +100,15 @@ def batch_total_for_run(
     stop_mode: str,
     stop_count: int,
     stop_weight_g: int,
+    enabled_specs: tuple[str, ...] | list[str] | None = None,
 ) -> int:
-    """按结束条件计算需预加载的批次上限（按总重时多备鱼以防批次不足）。"""
+    """按结束条件计算需预加载的批次上限（按总重时按启用规格最轻单尾估算条数）。"""
     if stop_mode != STOP_MODE_WEIGHT:
         return max(1, stop_count)
-    estimated = math.ceil(stop_weight_g / 250) + 5000
+    enabled = normalize_enabled_specs(enabled_specs)
+    min_inside = min(SPECS[spec]["range"][0] for spec in enabled)
+    # 留 2% 余量应对 ~1% 超规鱼与区间下沿波动
+    estimated = math.ceil(stop_weight_g / min_inside * 1.02) + 5000
     return max(DEFAULT_TOTAL, estimated)
 
 
@@ -346,6 +350,7 @@ class Stats:
     storage_timeout_tail: int = 0
     storage_full_tail: int = 0
     storage_batch_tail: int = 0
+    storage_max: int = 0
     unmatched_count: int = 0
     tail_count: int = 0
 
@@ -538,13 +543,21 @@ def load_or_generate_batch(
                 cached_weight = sum(r.weight for r in cached)
                 if cached_weight >= stop_weight_g:
                     return cached
-        max_fish = batch_total_for_run(stop_mode, total, stop_weight_g)
-        records, _ = _seed_gen.generate_fish_batch_by_weight(
+        max_fish = batch_total_for_run(
+            stop_mode, total, stop_weight_g, enabled_specs=enabled
+        )
+        records, summary = _seed_gen.generate_fish_batch_by_weight(
             target_weight_g=stop_weight_g,
             seed=seed,
             enabled_specs=enabled,
             max_fish=max_fish,
         )
+        if summary.total_weight < stop_weight_g:
+            raise ValueError(
+                f"按总重生成批次未达目标：{summary.total_weight / 1_000_000:.3f}t / "
+                f"{stop_weight_g / 1_000_000:.3f}t（{summary.total} 条，上限 {max_fish}）"
+                f" · 启用规格 {', '.join(enabled)} 最轻 {min(SPECS[s]['range'][0] for s in enabled)}g/尾"
+            )
         _seed_gen.save_csv(records, csv_path)
         return records
 
@@ -1492,6 +1505,7 @@ class SchedulerEngine:
             "storage_box": {
                 "count": self.lanes.storage_count(),
                 "capacity": self.lanes.storage_capacity,
+                "max": self.stats.storage_max,
                 "by_spec": storage_by_spec,
             },
             "storage_in": self.stats.storage_in,
@@ -1500,6 +1514,7 @@ class SchedulerEngine:
             "storage_timeout_tail": self.stats.storage_timeout_tail,
             "storage_full_tail": self.stats.storage_full_tail,
             "storage_batch_tail": self.stats.storage_batch_tail,
+            "storage_max": self.stats.storage_max,
             "modules": modules,
             "recent_cartons": recent_cartons,
             "carton_records": carton_records,
@@ -1530,6 +1545,12 @@ class SchedulerEngine:
             self._event(kind, msg, **extra)
         if self.verbose or force:
             print(f"[t={self.tick:05d}s] {msg}")
+
+    def _note_storage_peak(self) -> None:
+        """记录暂存箱历史峰值（条数）。"""
+        count = self.lanes.storage_count()
+        if count > self.stats.storage_max:
+            self.stats.storage_max = count
 
     def _apply_box_plan(self, plan: BoxPlan) -> None:
         """执行一次封箱：从料道/暂存移除鱼并更新统计。"""
@@ -2013,6 +2034,7 @@ class SchedulerEngine:
         self._process_reflow_intake()
         self._release_storage_by_demands()
         self._try_pack_all()
+        self._note_storage_peak()
 
         if record.outside or fish.spec is None:
             self.stats.outside_count += 1
@@ -2027,6 +2049,7 @@ class SchedulerEngine:
                 self._log(f"入料 #{fish.id} {fish.weight}g → 规格外")
         else:
             dest = self._route_spec_intake(fish)
+            self._note_storage_peak()
             if dest == "storage":
                 self._event(
                     "storage_in",
@@ -2055,6 +2078,7 @@ class SchedulerEngine:
         self._release_storage_by_demands()
         self._try_pack_all()
         self._monitor_storage()
+        self._note_storage_peak()
         self._anti_block()
         self._record_history()
 
@@ -2084,6 +2108,7 @@ class SchedulerEngine:
             self._release_storage_by_demands()
             self._try_pack_all()
             self._monitor_storage()
+            self._note_storage_peak()
             if self.stats.cartons == before and not self.lanes.reflow and not self.lanes.storage:
                 break
             self._anti_block()
@@ -2155,6 +2180,7 @@ class SchedulerEngine:
         print(f"    暂存超时   : {self.stats.storage_timeout_tail}")
         print(f"    暂存箱满   : {self.stats.storage_full_tail}")
         print(f"    暂存批末   : {self.stats.storage_batch_tail}")
+        print(f"    暂存峰值   : {self.stats.storage_max}/{self.lanes.storage_capacity}")
         print(f"    料道超时   : {self.stats.timeout_tail}")
         print(f"  未匹配/尾料  : {self.stats.unmatched_count}")
         print(f"    批末尾料   : {self.stats.tail_count}")
