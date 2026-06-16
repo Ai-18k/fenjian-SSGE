@@ -788,7 +788,7 @@ class FishTracker:
                 "reflow_reasons": list(t.reflow_reasons),
                 **describe_tail_trace(t, end_tick, batch_seed),
             }
-            for t in sorted(self.unmatched, key=lambda x: x.fish_id)
+            for t in sorted(list(self.unmatched), key=lambda x: x.fish_id)
         ]
 
 
@@ -1179,9 +1179,11 @@ class SchedulerEngine:
         stop_count: int = DEFAULT_TOTAL,
         stop_weight_g: int = DEFAULT_STOP_WEIGHT_G,
         timeout_clock: str = DEFAULT_TIMEOUT_CLOCK,
+        exclude_outside_stats: bool = False,
     ):
         """作用：初始化引擎（批次、料道、追踪器、统计）；POST /api/start 时创建。
-        前端：index/fifo_monitor「开始模拟」；控制种子、条数/总重、超时、启用规格、料道容量倍率。"""
+        前端：index/fifo_monitor「开始模拟」；控制种子、条数/总重、超时、启用规格、料道容量倍率。
+        exclude_outside_stats：批量测试用，规格外不计入料/结束条件，进度改显超时鱼。"""
         self.seed = seed
         self.interval = interval
         self.specs = specs
@@ -1189,6 +1191,7 @@ class SchedulerEngine:
         self.cap_factor = cap_factor
         self.verbose = verbose
         self.log_every = log_every
+        self.exclude_outside_stats = exclude_outside_stats
         self.stop_mode = stop_mode if stop_mode in (STOP_MODE_COUNT, STOP_MODE_WEIGHT) else STOP_MODE_COUNT
         self.stop_count = max(1, stop_count)
         self.stop_weight_g = max(1, stop_weight_g)
@@ -1424,7 +1427,7 @@ class SchedulerEngine:
                     "enabled": enabled,
                 }
         rounds_dist: dict[str, int] = {}
-        for t in self.tracker.traces.values():
+        for t in list(self.tracker.traces.values()):
             k = str(t.rounds)
             rounds_dist[k] = rounds_dist.get(k, 0) + 1
         recent_cartons = [
@@ -1466,7 +1469,7 @@ class SchedulerEngine:
             active_demands[0] if active_demands else None,
         )
         storage_by_spec: dict[str, int] = {}
-        for f in self.lanes.storage:
+        for f in list(self.lanes.storage):
             if f.spec:
                 storage_by_spec[f.spec] = storage_by_spec.get(f.spec, 0) + 1
         return {
@@ -2014,7 +2017,12 @@ class SchedulerEngine:
         """作用：判断是否已达入料结束条件（按条数或按累计总重）。"""
         if self.stop_mode == STOP_MODE_WEIGHT:
             return self.stats.input_weight >= self.stop_weight_g
+        if self.exclude_outside_stats:
+            return self.stats.input_count >= self.stop_count
         return self._cursor >= self.stop_count
+
+    def _timeout_fish_total(self) -> int:
+        return self.stats.timeout_tail + self.stats.storage_timeout_tail
 
     def process_one(self) -> bool:
         """作用：推进仿真一步——入料→回流再入道→封箱→防堵；达到结束条件返回 False。
@@ -2025,8 +2033,10 @@ class SchedulerEngine:
         self._advance_tick(1)
         record = self.batch[self._cursor]
         self._cursor += 1
-        self.stats.input_count += 1
-        self.stats.input_weight += record.weight
+        is_outside = record.outside or record.spec is None
+        if not (self.exclude_outside_stats and is_outside):
+            self.stats.input_count += 1
+            self.stats.input_weight += record.weight
 
         fish = record_to_fish(record, self.tick, enabled=set(self.specs))
 
@@ -2036,7 +2046,7 @@ class SchedulerEngine:
         self._try_pack_all()
         self._note_storage_peak()
 
-        if record.outside or fish.spec is None:
+        if is_outside or fish.spec is None:
             self.stats.outside_count += 1
             self.lanes.enqueue(fish, self.tick, self.tracker)
             self._event(
@@ -2090,10 +2100,14 @@ class SchedulerEngine:
                 )
             else:
                 progress = f"{self.stats.input_count}/{self.stop_count}"
+            if self.exclude_outside_stats:
+                tail_note = f"超时 {self._timeout_fish_total()}"
+            else:
+                tail_note = f"规格外 {self.stats.outside_count}"
             self._log(
                 f"进度 {progress} | "
                 f"成盒 {self.stats.cartons} | 装箱鱼 {self.stats.packed_fish} | "
-                f"回流 {self.stats.reflow_count} | 规格外 {self.stats.outside_count}",
+                f"回流 {self.stats.reflow_count} | {tail_note}",
                 force=True,
             )
         return not self._intake_complete()
@@ -2164,7 +2178,10 @@ class SchedulerEngine:
         print("智能分拣汇总")
         print("=" * 60)
         print(f"  批次种子     : {self.seed}")
-        print(f"  入料总数     : {self.stats.input_count}")
+        if self.exclude_outside_stats:
+            print(f"  入料总数     : {self.stats.input_count} (规格内，规格外 {self.stats.outside_count} 条不计)")
+        else:
+            print(f"  入料总数     : {self.stats.input_count}")
         print(f"  入料总重     : {self.stats.input_weight:,}g ({self.stats.input_weight / 1_000_000:.3f}t)")
         if self.stop_mode == STOP_MODE_WEIGHT:
             print(f"  结束条件     : 总重 ≥ {self.stop_weight_g / 1_000_000:.3f}t")
@@ -2172,7 +2189,8 @@ class SchedulerEngine:
             print(f"  结束条件     : 条数 {self.stop_count}")
         print(f"  成功装盒数   : {self.stats.cartons}")
         print(f"  成功装箱鱼   : {self.stats.packed_fish}")
-        print(f"  规格外       : {self.stats.outside_count}")
+        if not self.exclude_outside_stats:
+            print(f"  规格外       : {self.stats.outside_count}")
         print(f"  回流总次数   : {self.stats.reflow_count} (历史回流队列)")
         print(f"    暂存入箱   : {self.stats.storage_in}")
         print(f"    暂存回道   : {self.stats.storage_to_lane}")
@@ -2182,6 +2200,7 @@ class SchedulerEngine:
         print(f"    暂存批末   : {self.stats.storage_batch_tail}")
         print(f"    暂存峰值   : {self.stats.storage_max}/{self.lanes.storage_capacity}")
         print(f"    料道超时   : {self.stats.timeout_tail}")
+        print(f"    超时合计   : {self._timeout_fish_total()}")
         print(f"  未匹配/尾料  : {self.stats.unmatched_count}")
         print(f"    批末尾料   : {self.stats.tail_count}")
         print(f"  运行时长     : {self.tick}s (真实经过时间)")

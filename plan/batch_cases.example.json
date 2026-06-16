@@ -1,0 +1,50 @@
+{
+  "description": "批量测试用例示例 — 对齐 md/数据记录.md 对照实验",
+  "cases": [
+    {
+      "name": "25k-module-a",
+      "seed": 42,
+      "stop_mode": "count",
+      "stop_count": 25000,
+      "specs": "module-a",
+      "move_timeout": 180,
+      "cap_factor": 1
+    },
+    {
+      "name": "25k-module-b",
+      "seed": 42,
+      "stop_mode": "count",
+      "stop_count": 25000,
+      "specs": "module-b",
+      "move_timeout": 180,
+      "cap_factor": 1
+    },
+    {
+      "name": "25k-module-c",
+      "seed": 42,
+      "stop_mode": "count",
+      "stop_count": 25000,
+      "specs": "module-c",
+      "move_timeout": 180,
+      "cap_factor": 1
+    },
+    {
+      "name": "10t-module-a",
+      "seed": 42,
+      "stop_mode": "weight",
+      "stop_weight_tons": 10,
+      "specs": "module-a",
+      "move_timeout": 180,
+      "cap_factor": 1
+    },
+    {
+      "name": "10t-module-c",
+      "seed": 42,
+      "stop_mode": "weight",
+      "stop_weight_tons": 10,
+      "specs": "module-c",
+      "move_timeout": 180,
+      "cap_factor": 1
+    }
+  ]
+}

@@ -338,18 +338,16 @@ class SimulationRunner:
                     if self.stop_flag or self.engine is None:
                         break
                     if self.paused:
-                        eng = None
+                        paused = True
                     else:
-                        eng = self.engine
-                if eng is None:
+                        paused = False
+                        has_more = self.engine.process_one()
+                        if not has_more:
+                            self.engine.finish_batch()
+                            break
+                if paused:
                     time.sleep(0.1)
                     continue
-                has_more = eng.process_one()
-                if not has_more:
-                    with self.lock:
-                        if self.engine:
-                            self.engine.finish_batch()
-                    break
                 time.sleep(1.0 / self.speed)
         except Exception as exc:
             with self.lock:
