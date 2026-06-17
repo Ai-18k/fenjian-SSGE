@@ -760,7 +760,7 @@ def main() -> None:
         sys.exit(1)
 
     try:
-        server = ReusableHTTPServer(("0.0.0.0", port), Handler)
+        server = ReusableHTTPServer(("127.0.0.1", port), Handler)
     except OSError as exc:
         print(f"错误: 端口 {port} 已被占用 ({exc})")
         print("请先关闭旧的 web_server 进程，再重新启动。")
@@ -769,9 +769,9 @@ def main() -> None:
         sys.exit(1)
 
     print(f"web_server v{SERVER_VERSION}  工作目录: {SRC_DIR}")
-    print(f"统计面板: http://0.0.0.0:{port}/")
-    print(f"FIFO 动画: http://0.0.0.0:{port}/monitor")
-    print(f"版本检查: http://0.0.0.0:{port}/api/version")
+    print(f"统计面板: http://127.0.0.1:{port}/")
+    print(f"FIFO 动画: http://127.0.0.1:{port}/monitor")
+    print(f"版本检查: http://127.0.0.1:{port}/api/version")
     print("按 Ctrl+C 停止服务")
     try:
         server.serve_forever()

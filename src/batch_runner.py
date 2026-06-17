@@ -33,7 +33,7 @@ ROOT = SRC_DIR.parent
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from Scheduler_Engine import (  # noqa: E402
+from Scheduler_EngineV1 import (  # noqa: E402
     ALL_SPECS,
     DEFAULT_CAP_FACTOR,
     DEFAULT_ENABLED_SPECS,

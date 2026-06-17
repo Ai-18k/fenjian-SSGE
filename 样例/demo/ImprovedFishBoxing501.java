@@ -8,10 +8,6 @@ import lombok.extern.slf4j.Slf4j;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
-import java.sql.Connection;
-import java.sql.DriverManager;
-import java.sql.PreparedStatement;
-import java.sql.Statement;
 import java.util.*;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -24,15 +20,34 @@ import java.util.concurrent.atomic.AtomicInteger;
 @Slf4j
 public class ImprovedFishBoxing501 {
 
-    private static int limitWeight = (10 * 1000 * 1000 -100*1000 );
+//    private static int limitWeight = (10 * 1000 * 1000 -100*1000 );
+    private static int limitWeight = (4 * 1000 * 1000 );
 
     private static final int MAX_WEIGHT = 5030;
     private static final int MIN_WEIGHT = 4980;
-    private static int BUFFER_SIZE_LIMIT = 120;
-    private static final int CACHE_BOX_PER_SPEC = 4; // 每个规格4个暂存箱
 
-    private static int FISH_MAX_ROUND = 600;
-    private static Map<Integer,Fish> outTimeFish = new HashMap<>();
+    private static int BUFFER_SIZE_LIMIT = 90;//缓存池大小限制
+    private static int FISH_MAX_ROUND = 480;//超时鱼轮次
+
+    private static final int CACHE_BOX_PER_SPEC = 1; // 每个规格4个暂存箱
+    private static int BOX_TYPE = 2; // 1-装n-1 2-装一半 3-不装
+//    private static double BOX_RATE = 0.5;
+
+    private static Map<Integer,Fish> outTimeFish_180 = new HashMap<>();
+    private static Map<Integer,Fish> outTimeFish_240 = new HashMap<>();
+    private static Map<Integer,Fish> outTimeFish_300 = new HashMap<>();
+    private static Map<Integer,Fish> outTimeFish_420 = new HashMap<>();
+    private static Map<Integer,Fish> outTimeFish_540 = new HashMap<>();
+    private static Map<Integer,Fish> outTimeFish_600 = new HashMap<>();
+    private static Map<Integer,Fish> outTimeFish_660 = new HashMap<>();
+
+    private static final List<Integer> outTimeFishSize_180 = new ArrayList<>();
+    private static final List<Integer> outTimeFishSize_240 = new ArrayList<>();
+    private static final List<Integer> outTimeFishSize_300 = new ArrayList<>();
+    private static final List<Integer> outTimeFishSize_420 = new ArrayList<>();
+    private static final List<Integer> outTimeFishSize_540 = new ArrayList<>();
+    private static final List<Integer> outTimeFishSize_600 = new ArrayList<>();
+    private static final List<Integer> outTimeFishSize_660 = new ArrayList<>();
 
     private static int FISH_MIN_WEIGHT;
     private static int FISH_MAX_WEIGHT;
@@ -69,30 +84,117 @@ public class ImprovedFishBoxing501 {
     private static Map<Integer, List<int[]>> errorInterval;
     private static int[] minPossibleNextWeight;
     private static int calculateSize = 0;
+    private static boolean useNew = false;
 
-    private static List<String> result = new ArrayList<>();
-    private static List<Integer> outTimeFishSize = new ArrayList<>();
+    private static final List<String> result = new ArrayList<>();
+    private static final List<Integer> calSize = new ArrayList<>();
+    private static final List<Integer> totalSize = new ArrayList<>();
+    private static final List<Integer> subSize = new ArrayList<>();
+    private static final List<BigDecimal> remaining = new ArrayList<>();
 
+    private static final List<String> finalResult = new ArrayList<>();
     public static void main(String[] args) {
-//        mainFunction(5, 5011, 60);
-//        mainFunction(5, 5011, 90);
-//        mainFunction(5, 5011, 120);
-        mainFunction(100, 5011, 140);
-//        mainFunction(5, 5011, 150);
+        int round = 100;
+        useNew = true;
+        Map<String, BoxConfig> map = getBoxConfigMap();
+        configs = new BoxConfig[]{
+//                map.get("15p"),
+//                map.get("20p"),
+//                map.get("25p"),
+//                map.get("30p"),
+//                map.get("35p"),
+//                map.get("40p"),
+//                map.get("45p"),
+//                map.get("50p"),
+//                map.get("60p"),
+//                map.get("70p"),
+//                map.get("80p"),
+                map.get("90p"),
+                map.get("100p"),
+                map.get("110p"),
+                map.get("120p"),
+                map.get("130p"),
+                map.get("140p"),
+//                map.get("150p")
+        };
+
+//        mainFunction(round,60);
+//        mainFunction(round,70);
+//        mainFunction(round,80);
+//        mainFunction(round,90);
+//        mainFunction(round,100);
+//        mainFunction(round,110);
+//        mainFunction(round,120);
+//        mainFunction(round,200);
+//        mainFunction(round,210);
+//        mainFunction(round,220);
+//        mainFunction(round,230);
+//        mainFunction(round,240);
+//        mainFunction(round,250);
+
+        mainFunction(round,150);
+        mainFunction(round,160);
+        mainFunction(round,170);
+        mainFunction(round,180);
+        mainFunction(round,200);
+
+
         System.out.println("====================最终记录结果=======================");
+        for (String s : finalResult) {
+            System.out.println(s);
+        }
+    }
+
+    private static void cleanResultList() {
+        result.clear();
+        remaining.clear();
+        outTimeFishSize_180.clear();
+        outTimeFishSize_240.clear();
+        outTimeFishSize_300.clear();
+        outTimeFishSize_420.clear();
+        outTimeFishSize_540.clear();
+        outTimeFishSize_600.clear();
+        outTimeFishSize_660.clear();
+        totalSize.clear();
+        calSize.clear();
+        subSize.clear();
+    }
+
+    private static void printResult(int round) {
         for (String s : result) {
             System.out.println(s);
         }
-        System.out.println("平均超时鱼: "+ BigDecimal.valueOf(outTimeFishSize.stream().mapToInt(i -> i).average().getAsDouble()).setScale(2,RoundingMode.HALF_UP));
+        //计算平均剩余
+        BigDecimal sum = new BigDecimal(0);
+        for (BigDecimal bigDecimal : remaining) {
+            sum = sum.add(bigDecimal);
+        }
+        BigDecimal divide = sum.divide(BigDecimal.valueOf(remaining.size()), 2, RoundingMode.HALF_UP);
+        finalResult.add(String.format("【缓存池大小：%s,暂存箱数量：%s,超时时间：%s】 测试%s次\n 测试结果：平均超时鱼：三分钟%s条,四分钟%s条,五分钟%s条,七分钟%s条,九分钟%s条,十分钟%s条,十一分钟%s条,\n平均剩余：%skg, 平均样本数：%s, 平均计算次数：%s，平均回流次数：%s",
+                BUFFER_SIZE_LIMIT, CACHE_BOX_PER_SPEC,FISH_MAX_ROUND, round,
+                BigDecimal.valueOf(outTimeFishSize_180.stream().mapToInt(i -> i).average().getAsDouble()).setScale(2,RoundingMode.HALF_UP),
+                BigDecimal.valueOf(outTimeFishSize_240.stream().mapToInt(i -> i).average().getAsDouble()).setScale(2,RoundingMode.HALF_UP),
+                BigDecimal.valueOf(outTimeFishSize_300.stream().mapToInt(i -> i).average().getAsDouble()).setScale(2,RoundingMode.HALF_UP),
+                BigDecimal.valueOf(outTimeFishSize_420.stream().mapToInt(i -> i).average().getAsDouble()).setScale(2,RoundingMode.HALF_UP),
+                BigDecimal.valueOf(outTimeFishSize_540.stream().mapToInt(i -> i).average().getAsDouble()).setScale(2,RoundingMode.HALF_UP),
+                BigDecimal.valueOf(outTimeFishSize_600.stream().mapToInt(i -> i).average().getAsDouble()).setScale(2,RoundingMode.HALF_UP),
+                BigDecimal.valueOf(outTimeFishSize_660.stream().mapToInt(i -> i).average().getAsDouble()).setScale(2,RoundingMode.HALF_UP),
+                divide,
+                BigDecimal.valueOf(totalSize.stream().mapToInt(i -> i).average().getAsDouble()).setScale(2,RoundingMode.HALF_UP),
+                BigDecimal.valueOf(calSize.stream().mapToInt(i -> i).average().getAsDouble()).setScale(2,RoundingMode.HALF_UP),
+                BigDecimal.valueOf(subSize.stream().mapToInt(i -> i).average().getAsDouble()).setScale(2,RoundingMode.HALF_UP)
+        ));
+        cleanResultList();
     }
 
-    public static void mainFunction(int round, int testNumber, int bufferSizeLimit) {
+
+    public static void mainFunction(int round, int bufferSIze) {
         int size = 1;
+        BUFFER_SIZE_LIMIT = bufferSIze;
         while (size <= round) {
             String uuid = UUID.randomUUID().toString();
-            log.info("===============================测试批次开始：{}===============================", uuid);
+            log.info("===============================测试{}批次开始：{}===============================", size, uuid);
             initBoxConfig();
-            BUFFER_SIZE_LIMIT = bufferSizeLimit;
             int fishCount = 25000;
             long start = System.currentTimeMillis();
             simulateFishFlow(fishCount);
@@ -175,8 +277,22 @@ public class ImprovedFishBoxing501 {
             log.info("剩余率：{}%，成功率：{}%", percent, BigDecimal.valueOf(100).subtract(percent));
             log.info("  结束原因：{}", stopReason);
             log.info("  计算次数：{}", calculateSize);
-            log.info("超时的鱼：{}条",outTimeFish.size());
-            outTimeFishSize.add(outTimeFish.size());
+            log.info("超时的鱼：三分钟{}条,四分钟{}条,五分钟{}条,七分钟{}条,九分钟{}条,十分钟{}条,十一分钟{}条",
+                    outTimeFish_180.size(),
+                    outTimeFish_240.size(),
+                    outTimeFish_300.size(),
+                    outTimeFish_420.size(),
+                    outTimeFish_540.size(),
+                    outTimeFish_600.size(),
+                    outTimeFish_660.size()
+            );
+            outTimeFishSize_180.add(outTimeFish_180.size());
+            outTimeFishSize_240.add(outTimeFish_240.size());
+            outTimeFishSize_300.add(outTimeFish_300.size());
+            outTimeFishSize_420.add(outTimeFish_420.size());
+            outTimeFishSize_540.add(outTimeFish_540.size());
+            outTimeFishSize_600.add(outTimeFish_600.size());
+            outTimeFishSize_660.add(outTimeFish_660.size());
             log.info("最终记录 缓存箱：{} 完成率：{}%（数量）/ {}%（重量） 剩余：{}kg ，计算次数：{}，总样本：{}",
                     BUFFER_SIZE_LIMIT,
                     compelateRate,
@@ -189,99 +305,16 @@ public class ImprovedFishBoxing501 {
                     BigDecimal.valueOf(100).subtract(percent),
                     divide,
                     calculateSize, FISH_SIZE));
-
-//            saveLogs(testNumber,uuid,size,null,fishCount,null,
-//                    totalBuffered, bufferJson.toJSONString(),timeConsuming,failBoxList.size(),JSON.toJSONString(failBoxList));
+            calSize.add(calculateSize);
+            totalSize.add(FISH_SIZE);
+            remaining.add(divide);
+            subSize.add(calculateSize - FISH_SIZE);
             size++;
         }
+
+        printResult(round);
     }
 
-    private static void saveLogs(int testNumber,String uuid,int batch_size,String specs,int simple_total
-            ,String buffer_detail,int max_buffer_remaining_size,
-                                 String buffer_remaining_detail, long time_consuming
-    ,Integer failBoxSize,String failBoxDetail){
-        // 修改这里的数据库连接信息
-        String url = "jdbc:mysql://182.43.38.79:3306/fish_test";
-        String user = "root";
-        String password = "lzh123!@#";
-        String tableName = testNumber + "_boxing_test_logs_" + BUFFER_SIZE_LIMIT; // LIMIT_SIZE 为常量 210
-
-        try {
-            // 1. 加载驱动
-            Class.forName("com.mysql.cj.jdbc.Driver");
-
-            // 2. 建立连接
-            Connection conn = DriverManager.getConnection(url, user, password);
-
-            String createSql = "CREATE TABLE IF NOT EXISTS `" + tableName + "` ("
-                    + "`id` INT UNSIGNED NOT NULL AUTO_INCREMENT,"
-                    + "`batch_size` INT NOT NULL,"
-                    + "`specs` VARCHAR(500) DEFAULT NULL,"
-                    + "`stop_reason` VARCHAR(255) DEFAULT NULL,"
-                    + "`simple_total` INT DEFAULT NULL,"
-                    + "`actual_total` INT NOT NULL,"
-                    + "`reflow_total` INT NOT NULL,"
-                    + "`max_buffer_size` INT NOT NULL,"
-                    + "`box_size` INT NOT NULL,"
-                    + "`fail_box_size` INT NOT NULL,"
-                    + "`max_buffer_remaining_size` INT NOT NULL,"
-                    + "`time_consuming` BIGINT NOT NULL,"
-                    + "`created_datetime` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,"
-                    + "`uuid` VARCHAR(36) NOT NULL,"
-                    + "`buffer_detail` LONGTEXT,"
-                    + "`buffer_remaining_detail` LONGTEXT,"
-                    + "`cache_boxes_detail` LONGTEXT,"
-                    + "`reflow_fish_detail` LONGTEXT,"
-                    + "`box_list_detail` LONGTEXT,"
-                    + "`fail_box_list_detail` LONGTEXT,"
-                    + "PRIMARY KEY (`id`),"
-                    + "KEY `idx_created` (`created_datetime`)"
-                    + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='鱼群装箱测试日志表'";
-            try (Statement stmt = conn.createStatement()) {
-                stmt.execute(createSql);
-            }
-            // 3. 创建SQL语句（根据您的表结构调整）
-            String sql = "INSERT INTO " + tableName +
-                    " (batch_size, specs, stop_reason, simple_total, actual_total, reflow_total, " +
-                    "max_buffer_size, buffer_detail, box_size, max_buffer_remaining_size, " +
-                    "buffer_remaining_detail, time_consuming, created_datetime,uuid,fail_box_size,fail_box_list_detail) " +
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(),?,?,?)";
-
-            // 4. 创建PreparedStatement
-            PreparedStatement ps = conn.prepareStatement(sql);
-
-            // 5. 设置参数（替换为您的实际数据）
-            ps.setInt(1, batch_size);                    // batch_size
-            ps.setString(2, specs);           // specs
-            ps.setString(3, stopReason);       // stop_reason
-            ps.setInt(4, limitWeight);                   // simple_total
-            ps.setInt(5, totalFishWeight);                    // actual_total
-            ps.setInt(6, reflowFish.size());                    // actual_total
-            ps.setInt(7, MAX_BUFFER_SIZE);                    // max_buffer_size
-            ps.setString(8, buffer_detail); // buffer_detail
-            ps.setInt(9, boxList.size());                     // box_size
-            ps.setInt(10, max_buffer_remaining_size);                     // max_buffer_remaining_size
-            ps.setString(11, buffer_remaining_detail); // buffer_remaining_detail
-            ps.setLong(12, time_consuming);                    // time_consuming
-            ps.setString(13, uuid); // uuid
-            ps.setInt(14, failBoxSize); // 失败数量
-            ps.setString(15, failBoxDetail); // 失败数量
-            // 6. 执行插入
-            int result = ps.executeUpdate();
-            if (result > 0) {
-                System.out.println("✅ 数据保存成功！");
-            } else {
-                System.out.println("❌ 数据保存失败！");
-            }
-
-            // 7. 关闭连接
-            ps.close();
-            conn.close();
-
-        } catch (Exception e) {
-            e.printStackTrace();
-        }
-    }
 
 
     // ==================== 模拟鱼流 ====================
@@ -298,12 +331,33 @@ public class ImprovedFishBoxing501 {
         BoxConfig specConfig = getSpec(weight);
         return new Fish(id, weight, 0, specConfig.getSpec());
     }
-    public static Fish generateFish(int id){
-        Random rand = new Random();
-        FISH_SIZE++;
-        int weight = FISH_MIN_WEIGHT + rand.nextInt(FISH_MAX_WEIGHT - FISH_MIN_WEIGHT + 1);
-        BoxConfig specConfig = getSpec(weight);
-        return new Fish(id, weight, 0, specConfig.getSpec());
+    private static void dealwithOutTime(Fish oldFish, Fish newFish){
+        if (newFish.getId() - oldFish.getId()  > 180) { outTimeFish_180.put(oldFish.getId(),oldFish); }
+        if (newFish.getId() - oldFish.getId()  > 240) { outTimeFish_240.put(oldFish.getId(),oldFish); }
+        if (newFish.getId() - oldFish.getId()  > 300) { outTimeFish_300.put(oldFish.getId(),oldFish); }
+        if (newFish.getId() - oldFish.getId()  > 420) { outTimeFish_420.put(oldFish.getId(),oldFish); }
+        if (newFish.getId() - oldFish.getId()  > 540) { outTimeFish_540.put(oldFish.getId(),oldFish); }
+        if (newFish.getId() - oldFish.getId()  > 600) { outTimeFish_600.put(oldFish.getId(),oldFish); }
+        if (newFish.getId() - oldFish.getId()  > 660) { outTimeFish_660.put(oldFish.getId(),oldFish); }
+    }
+    private static void outTimmFishMethod(Fish newFish) {
+        //处理超时鱼
+        bufferMap.forEach((k, v) -> {
+            for (Fish fish1 : v) {
+                dealwithOutTime(fish1,newFish);
+            }
+        });
+        for (int i = 0; i < cacheBoxes.length; i++) {
+            List<Fish>[] cacheBox = cacheBoxes[i];
+            for (int j = 0; j < cacheBox.length; j++) {
+                List<Fish> box = cacheBox[j];
+                boolean flag = false;
+                for (Fish fish1 : box) {
+                    dealwithOutTime(fish1,newFish);
+                }
+            }
+        }
+
     }
 
     private static void simulateFishFlow(int fishCount) {
@@ -312,16 +366,8 @@ public class ImprovedFishBoxing501 {
         while (totalFishWeight < limitWeight) {
 //            Fish fish = generateFish(i);//随机
             Fish fish = generateRandomFish(i);
-
-            //处理超时鱼
-            bufferMap.forEach((k, v) -> {
-                for (Fish fish1 : v) {
-                    if (fish.getId() - fish1.getId()  >= FISH_MAX_ROUND) {
-                        //超时了记录在map
-                        outTimeFish.put(fish1.getId(),fish1);
-                    }
-                }
-            });
+            //处理超时
+            outTimmFishMethod(fish);
 
             totalFishWeight+=fish.getWeight();
 
@@ -353,7 +399,7 @@ public class ImprovedFishBoxing501 {
                 processNewFish(newFish);
             }
         }
-        finishWithBuffer();
+//        finishWithBuffer();
         if (stopReason == null) stopReason = "样本处理完成";
     }
 
@@ -535,7 +581,7 @@ public class ImprovedFishBoxing501 {
 
         // 放入空暂存箱（空箱没有阈值限制）
         for (int j = 0; j < CACHE_BOX_PER_SPEC; j++) {
-            if (cacheBoxes[specIdx][j].isEmpty()) {
+            if (cacheBoxes[specIdx][j].isEmpty() && boxThreshold[specIdx] > 0) {
                 cacheBoxes[specIdx][j].add(fish);
                 sumWeights[specIdx][j] += fish.getWeight();
                 return true;
@@ -563,7 +609,7 @@ public class ImprovedFishBoxing501 {
                     }
                 }
 
-                if (cacheBox.size() == boxThreshold[specIdx]){
+                if (cacheBox.size() == boxThreshold[specIdx] && sumWeights[specIdx][j] > 0){
                     BoxConfig cfg = configs[specIdx];
                     List<String> specList = cfg.getSpecList();
                     int weight = sumWeights[specIdx][j];
@@ -948,19 +994,32 @@ public class ImprovedFishBoxing501 {
     private static void fillBoxFromBuffer(int specIdx, int boxIdx) {
         String spec = configs[specIdx].getSpec();
         List<Fish> specBuf = bufferMap.get(spec);
-        if (specBuf == null || specBuf.isEmpty()) return;
+        if (specBuf == null || specBuf.isEmpty()) {
+            return;
+        }
+        if (0 == boxThreshold[specIdx]){
+            return;
+        }
+
+        // 按ID升序排序，让最老的鱼（ID最小）排在前面
+        specBuf.sort(Comparator.comparingInt(Fish::getId));
 
         Iterator<Fish> it = specBuf.iterator();
         while (cacheBoxes[specIdx][boxIdx].size() < boxThreshold[specIdx] && it.hasNext()) {
             Fish f = it.next();
-            if (sumWeights[specIdx][boxIdx] + f.getWeight() <= MAX_WEIGHT) {
-                it.remove();
-                totalBuffered--;
-                cacheBoxes[specIdx][boxIdx].add(f);
-                sumWeights[specIdx][boxIdx] += f.getWeight();
+            int newWeight = sumWeights[specIdx][boxIdx] + f.getWeight();
+            if (newWeight <= MAX_WEIGHT) {
+                it.remove();               // 从缓冲池中移除
+                totalBuffered--;           // 更新缓冲池计数
+                cacheBoxes[specIdx][boxIdx].add(f);    // 加入暂存箱
+                sumWeights[specIdx][boxIdx] = newWeight; // 更新暂存箱重量
             }
         }
-        if (specBuf.isEmpty()) bufferMap.remove(spec);
+
+        // 如果该规格缓冲池已空，从map中删除
+        if (specBuf.isEmpty()) {
+            bufferMap.remove(spec);
+        }
     }
 
     private static void addToBuffer(Fish fish) {
@@ -1120,7 +1179,13 @@ public class ImprovedFishBoxing501 {
         totalBuffered = 0;
         bufferMap.clear();
         boxList.clear();
-        outTimeFish.clear();
+        outTimeFish_180.clear();
+        outTimeFish_240.clear();
+        outTimeFish_300.clear();
+        outTimeFish_420.clear();
+        outTimeFish_540.clear();
+        outTimeFish_600.clear();
+        outTimeFish_660.clear();
 //        reflowCount = 0;
         reflowFish.clear();
         totalFishWeight = 0;
@@ -1128,27 +1193,6 @@ public class ImprovedFishBoxing501 {
 
         errorInterval = new HashMap<>();
 
-        Map<String, BoxConfig> map = getBoxConfigMap();
-        configs = new BoxConfig[]{
-//                map.get("15p"),
-                map.get("20p"),
-                map.get("25p"),
-                map.get("30p"),
-                map.get("35p"),
-                map.get("40p"),
-                map.get("45p"),
-//                map.get("50p"),
-//                map.get("60p"),
-//                map.get("70p"),
-//                map.get("80p"),
-//                map.get("90p"),
-//                map.get("100p"),
-//                map.get("110p"),
-//                map.get("120p"),
-//                map.get("130p"),
-//                map.get("140p"),
-//                map.get("150p")
-        };
 
         int specCount = configs.length;
         cacheBoxes = new List[specCount][CACHE_BOX_PER_SPEC];
@@ -1159,18 +1203,26 @@ public class ImprovedFishBoxing501 {
 
         minPossibleNextWeight = new int[specCount];
         for (int i = 0; i < specCount; i++) {
-
+            BoxConfig config = configs[i];
             for (int j = 0; j < CACHE_BOX_PER_SPEC; j++) {
                 cacheBoxes[i][j] = new ArrayList<>();
                 sumWeights[i][j] = 0;
             }
             // 阈值 = 最小装箱条数，达到后暂存箱不再接收新鱼
-            boxThreshold[i] = (int) ((configs[i].getMinFishCount()+1)*0.5);
+            if (BOX_TYPE == 1){
+                boxThreshold[i] = (int) (config.getMinFishCount()-1);
+            }else if (BOX_TYPE == 2){
+//                boxThreshold[i] = (int) ((config.getMinFishCount())*BOX_RATE);
+                boxThreshold[i] = config.getPreload();
+            }else {
+                boxThreshold[i] = 0;
+            }
+//
 //            boxThreshold[i] = (int) (configs[i].getMinFishCount()-1);
 
-            int minW = configs[i].getMinFishWeight();
-            for (String spec : configs[i].getSpecList()) {
-                if (spec.equals(configs[i].getSpec())) continue;
+            int minW = config.getMinFishWeight();
+            for (String spec : config.getSpecList()) {
+                if (spec.equals(config.getSpec())) continue;
                 int idx = getConfigIndex(spec);
                 if (idx >= 0) {
                     minW = Math.min(minW, configs[idx].getMinFishWeight());
@@ -1187,6 +1239,8 @@ public class ImprovedFishBoxing501 {
         FISH_MIN_WEIGHT = configs[specCount - 1].getMinFishWeight(); // 45p的min
         FISH_MAX_WEIGHT = configs[0].getMaxFishWeight();             // 20p的max
     }
+
+
 
     private static List<int[]> getErrorInterval(int specIndex) {
         BoxConfig config = configs[specIndex];
@@ -1241,8 +1295,7 @@ public class ImprovedFishBoxing501 {
 
     private static String getBoxInfo(Box box) {
         StringBuilder sb = new StringBuilder("[");
-        for (Object obj : box.getFishList()) {
-            Fish f = (Fish) obj;
+        for (Fish f : box.getFishList()) {
             sb.append(f.getId()).append("=").append(f.getWeight()).append("g/").append(f.getSpec()).append(",");
         }
         if (sb.length() > 1) sb.setLength(sb.length() - 1);
@@ -1263,24 +1316,50 @@ public class ImprovedFishBoxing501 {
 
     private static Map<String, BoxConfig> getBoxConfigMap() {
         Map<String, BoxConfig> map = new HashMap<>();
-        map.put("15p", new BoxConfig("15p", 7, 9, 566, 700, Arrays.asList("15p", "20p")));
-        map.put("20p", new BoxConfig("20p", 10, 11, 446, 565, Arrays.asList("15p", "20p", "25p")));
-        map.put("25p", new BoxConfig("25p", 12, 14, 366, 445, Arrays.asList("20p", "25p", "30p")));
-        map.put("30p", new BoxConfig("30p", 15, 16, 306, 365, Arrays.asList("25p", "30p", "35p")));
-        map.put("35p", new BoxConfig("35p", 17, 19, 266, 305, Arrays.asList("30p", "35p", "40p")));
-        map.put("40p", new BoxConfig("40p", 20, 21, 231, 265, Arrays.asList("35p", "40p", "45p")));
-        map.put("45p", new BoxConfig("45p", 22, 23, 211, 230, Arrays.asList("40p", "45p", "50p")));
-        map.put("50p", new BoxConfig("50p", 25, 26, 183, 210, Arrays.asList("45p", "50p", "60p")));
-        map.put("60p", new BoxConfig("60p", 30, 31, 153, 182, Arrays.asList("50p", "60p", "70p")));
-        map.put("70p", new BoxConfig("70p", 35, 36, 133, 152, Arrays.asList("60p", "70p", "80p")));
-        map.put("80p", new BoxConfig("80p", 40, 41, 116, 132, Arrays.asList("70p", "80p", "90p")));
-        map.put("90p", new BoxConfig("90p", 45, 46, 106, 115, Arrays.asList("80p", "90p", "100p")));
-        map.put("100p", new BoxConfig("100p", 50, 51, 96, 105, Arrays.asList("90p", "100p", "110p")));
-        map.put("110p", new BoxConfig("110p", 55, 56, 87, 95, Arrays.asList("100p", "110p", "120p")));
-        map.put("120p", new BoxConfig("120p", 60, 61, 80, 86, Arrays.asList("110p", "120p", "130p")));
-        map.put("130p", new BoxConfig("130p", 65, 66, 74, 79, Arrays.asList("120p", "130p", "140p")));
-        map.put("140p", new BoxConfig("140p", 70, 71, 69, 73, Arrays.asList("130p", "140p", "150p")));
-        map.put("150p", new BoxConfig("150p", 75, 76, 65, 68, Arrays.asList("140p", "150p")));
+
+        if (useNew){
+            //新规格
+            map.put("15p", new BoxConfig("15p", 2, 7, 9, 556, 680, Arrays.asList("15p", "20p")));
+            map.put("20p", new BoxConfig("20p", 2, 10, 11, 444, 555, Arrays.asList("15p", "20p", "25p")));
+            map.put("25p", new BoxConfig("25p", 3, 12, 14, 358, 444, Arrays.asList("20p", "25p", "30p")));
+            map.put("30p", new BoxConfig("30p", 3, 15, 16, 308, 358, Arrays.asList("25p", "30p", "35p")));
+            map.put("35p", new BoxConfig("35p", 4, 17, 19, 265, 307, Arrays.asList("30p", "35p", "40p")));
+            map.put("40p", new BoxConfig("40p", 4, 20, 21, 235, 264, Arrays.asList("35p", "40p", "45p")));
+            map.put("45p", new BoxConfig("45p", 5, 22, 23, 215, 235, Arrays.asList("40p", "45p", "50p")));
+            map.put("50p", new BoxConfig("50p", 8, 25, 26, 182, 214, Arrays.asList("45p", "50p", "60p")));
+            map.put("60p", new BoxConfig("60p", 13,29, 31, 155, 181, Arrays.asList("50p", "60p", "70p")));
+            map.put("70p", new BoxConfig("70p", 14,34, 36, 135, 154, Arrays.asList("60p", "70p", "80p")));
+            map.put("80p", new BoxConfig("80p", 16,39, 41, 118, 134, Arrays.asList("70p", "80p", "90p")));
+            map.put("90p", new BoxConfig("90p", 18,44, 46, 105, 117, Arrays.asList("80p", "90p", "100p")));
+            map.put("100p", new BoxConfig("100p", 25,49, 51, 95, 104, Arrays.asList("90p", "100p", "110p")));
+            map.put("110p", new BoxConfig("110p", 28,54, 56, 87, 94, Arrays.asList("100p", "110p", "120p")));
+            map.put("120p", new BoxConfig("120p", 30,59, 61, 80, 86, Arrays.asList("110p", "120p", "130p")));
+            map.put("130p", new BoxConfig("130p", 33,64, 66, 74, 79, Arrays.asList("120p", "130p", "140p")));
+            map.put("140p", new BoxConfig("140p", 35,69, 71, 69, 73, Arrays.asList("130p", "140p", "150p")));
+            map.put("150p", new BoxConfig("150p", 37,74, 76, 64, 68, Arrays.asList("140p", "150p")));
+        }else {
+            //旧规格
+            map.put("15p", new BoxConfig("15p", 2, 8, 9, 566, 700, Arrays.asList("15p", "20p")));
+            map.put("20p", new BoxConfig("20p", 2, 10, 11, 446, 565, Arrays.asList("15p", "20p", "25p")));
+            map.put("25p", new BoxConfig("25p", 3, 12, 14, 366, 445, Arrays.asList("20p", "25p", "30p")));
+            map.put("30p", new BoxConfig("30p", 3, 15, 16, 306, 365, Arrays.asList("25p", "30p", "35p")));
+            map.put("35p", new BoxConfig("35p", 4, 17, 19, 266, 305, Arrays.asList("30p", "35p", "40p")));
+            map.put("40p", new BoxConfig("40p", 4, 20, 21, 231, 265, Arrays.asList("35p", "40p", "45p")));
+            map.put("45p", new BoxConfig("45p", 5, 22, 23, 211, 230, Arrays.asList("40p", "45p", "50p")));
+            map.put("50p", new BoxConfig("50p", 8, 25, 26, 183, 210, Arrays.asList("45p", "50p", "60p")));
+            map.put("60p", new BoxConfig("60p", 15, 30, 31, 153, 182, Arrays.asList("50p", "60p", "70p")));
+            map.put("70p", new BoxConfig("70p", 18, 35, 36, 133, 152, Arrays.asList("60p", "70p", "80p")));
+            map.put("80p", new BoxConfig("80p", 20, 40, 41, 116, 132, Arrays.asList("70p", "80p", "90p")));
+            map.put("90p", new BoxConfig("90p", 23, 45, 46, 106, 115, Arrays.asList("80p", "90p", "100p")));
+            map.put("100p", new BoxConfig("100p", 25, 50, 51, 96, 105, Arrays.asList("90p", "100p", "110p")));
+            map.put("110p", new BoxConfig("110p", 28, 55, 56, 87, 95, Arrays.asList("100p", "110p", "120p")));
+            map.put("120p", new BoxConfig("120p", 30, 60, 61, 80, 86, Arrays.asList("110p", "120p", "130p")));
+            map.put("130p", new BoxConfig("130p", 33, 65, 66, 74, 79, Arrays.asList("120p", "130p", "140p")));
+            map.put("140p", new BoxConfig("140p", 35, 70, 71, 69, 73, Arrays.asList("130p", "140p", "150p")));
+            map.put("150p", new BoxConfig("150p", 37, 75, 76, 65, 68, Arrays.asList("140p", "150p")));
+
+        }
+
         return map;
     }
 }

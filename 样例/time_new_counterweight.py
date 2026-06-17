@@ -342,6 +342,8 @@ class ImprovedSpecLineOptimization(Spec):
             return
 
         self.sort_seq_by_spec[spec_key] = self.sort_seq_by_spec.get(spec_key, 0) + 1
+        if self.sort_seq_by_spec["100p"]==50:
+            pass
         seq = self.sort_seq_by_spec[spec_key]
         fish["matched_spec"] = spec_key
         fish["sorted_at"] = time.time()
