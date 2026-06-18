@@ -20,8 +20,9 @@ import math
 import sys
 import time
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, TextIO
 
 # ---------------------------------------------------------------------------
 # 规格表 SPECS：键=规格名，值含 range(克重区间) 与 counts(合法装箱尾数)
@@ -57,7 +58,9 @@ MODULE_SPECS: dict[str, tuple[str, ...]] = {
 }
 
 ALL_SPECS: tuple[str, ...] = tuple(SPECS.keys())           # 全部 18 规格
-DEFAULT_ENABLED_SPECS: tuple[str, ...] = ("15p", "20p", "25p", "30p", "35p", "40p")  # 默认启用
+# DEFAULT_ENABLED_SPECS: tuple[str, ...] = ("15p", "20p", "25p", "30p", "35p", "40p")  # 默认启用
+DEFAULT_ENABLED_SPECS: tuple[str, ...] = ("45p", "50p", "60p", "70p", "80p", "90p")  # 默认启用
+# DEFAULT_ENABLED_SPECS: tuple[str, ...] = ("100p", "110p", "120p", "130p", "140p", "150p")  # 默认启用
 DEMO_SPECS: tuple[str, ...] = DEFAULT_ENABLED_SPECS          # 演示用规格（同默认）
 
 TARGET_MIN = 4980    # 盒重下限（克）
@@ -69,9 +72,9 @@ BUCKET_LABEL = {"small": "小", "medium": "中", "large": "大"}  # 分区中文
 
 DEFAULT_TOTAL = 25000              # 默认入料条数
 DEFAULT_SEED = 42                  # 默认随机种子
-DEFAULT_MOVE_TIMEOUT = 30          # 默认队首超时阈值
-DEFAULT_CAP_FACTOR = 1             # 三合一扩容：min(counts) + cap_factor（默认 +1）
-DEFAULT_STORAGE_CAPACITY = 150     # 暂存箱容量上限（条）
+DEFAULT_MOVE_TIMEOUT = 600        # 默认队首超时阈值
+DEFAULT_CAP_FACTOR = 2             # 三合一扩容：min(counts) + cap_factor（默认 +1）
+DEFAULT_STORAGE_CAPACITY = 500    # 暂存箱容量上限（条）
 STOP_MODE_COUNT = "count"          # 结束模式：按条数
 STOP_MODE_WEIGHT = "weight"        # 结束模式：按总重
 DEFAULT_STOP_WEIGHT_TONS = 10.0    # 默认按重结束目标（吨）
@@ -111,26 +114,9 @@ _root = Path(__file__).resolve().parent  # 项目根目录 demo/
 # 动态加载 plan/ 下算法子模块
 _bucket_rules = _load_module("bucket_rules", _root / "plan" / "细分规则.py")
 _seed_gen = _load_module("fish_seed_gen", _root / "plan" / "随机种子生成.py")
-_depth_search = _load_module("depth_search", _root / "plan" / "深度搜索.py")
 _demand_calc = _load_module("demand_calc", _root / "plan" / "计算需求.py")
-dfs_find_best_from_items = _depth_search.dfs_find_best_from_items  # DFS 配盒入口
-BoxDemandCalculator = _demand_calc.BoxDemandCalculator              # 动态需求计算器
-_intersect_interval = _demand_calc.intersect_interval             # 区间交集
 
-DFS_MAX_BUFFER = _depth_search.DEFAULT_DFS_MAX_BUFFER               # DFS 窗口上限
-DFS_MAX_NODES = _depth_search.DEFAULT_DFS_MAX_NODES                 # DFS 节点上限
-DFS_WINDOW_PER_BUCKET = 15                                          # 料道积压时每路取样条数
-
-
-def dfs_max_buffer_for_spec(spec: str) -> int:
-    """DFS 搜索窗口上限：小规格用默认 42；100p+ 需覆盖最大装箱尾数（如 150p→76）。"""
-    counts = SPECS[spec]["counts"]
-    return max(DFS_MAX_BUFFER, max(counts) + 5)
-
-
-def dfs_window_per_bucket_for_spec(spec: str) -> int:
-    """料道积压时各路取样条数，须能凑够该规格最小装箱尾数。"""
-    return max(DFS_WINDOW_PER_BUCKET, math.ceil(dfs_max_buffer_for_spec(spec) / 3))
+BoxDemandCalculator = _demand_calc.BoxDemandCalculator
 
 BUCKET_RANGES = {}  # 各规格的小/中/大克重区间 {spec: BucketRange}
 for spec in ALL_SPECS:
@@ -174,97 +160,42 @@ def weight_in_ranges(
     return False
 
 
-def spec_inventory_weights(lanes: "SortingLanes", spec: str) -> list[int]:
-    """某规格料道+暂存箱内全部鱼的克重列表。"""
-    weights: list[int] = []
-    if spec in lanes.queues:
-        for b in BUCKETS:
-            weights.extend(f.weight for f in lanes.queues[spec][b])
-    weights.extend(f.weight for f in lanes.storage if f.spec == spec)
-    return weights
-
-
 def lane_inventory_weights(lanes: "SortingLanes", spec: str) -> list[int]:
-    """某规格三路料道内鱼重量（不含暂存箱）。"""
-    weights: list[int] = []
-    if spec in lanes.queues:
-        for b in BUCKETS:
-            weights.extend(f.weight for f in lanes.queues[spec][b])
-    return weights
+    """某规格三合一料道内鱼重量（不含暂存箱）。"""
+    if spec not in lanes.lane:
+        return []
+    return [f.weight for f in lanes.lane[spec]]
 
 
-def diagnostic_need_weight_ranges(
-    lanes: "SortingLanes",
-    spec: str,
-) -> list[tuple[int, int]] | None:
-    """满容仍无解时，按偏轻/偏重诊断收窄到最缺的小/中/大分区。"""
-    q = lanes.queues.get(spec)
-    if not q:
-        return None
-    q_small, q_medium, q_large = q["small"], q["medium"], q["large"]
-    total = len(q_small) + len(q_medium) + len(q_large)
-    min_cnt = min(SPECS[spec]["counts"])
-    if total < min_cnt:
-        return None
-    p_small = prefix_weights(q_small)
-    p_medium = prefix_weights(q_medium)
-    p_large = prefix_weights(q_large)
-    best: dict | None = None
-    for count in SPECS[spec]["counts"]:
-        for a in range(min(len(q_small), count) + 1):
-            for b in range(min(len(q_medium), count - a) + 1):
-                c = count - a - b
-                if c > len(q_large):
-                    continue
-                weight = p_small[a] + p_medium[b] + p_large[c]
-                if weight < TARGET_MIN:
-                    diff = TARGET_MIN - weight
-                elif weight > TARGET_MAX:
-                    diff = weight - TARGET_MAX
-                else:
-                    diff = 0
-                score = diff * 10 + abs(weight - TARGET_MID)
-                if best is None or score < best["score"]:
-                    best = {"diff": diff, "score": score, "weight": weight}
-    if not best or best["diff"] == 0:
-        return None
-    if best["weight"] < TARGET_MIN:
-        return [bucket_weight_range(spec, "large")]
-    if best["weight"] > TARGET_MAX:
-        return [bucket_weight_range(spec, "small")]
-    return None
-
-
-def spec_demand_weight_ranges(
-    lanes: "SortingLanes",
-    spec: str,
-) -> list[tuple[int, int]]:
-    """规格广播用的重量区间：三合一库存动态需求（不拆小/中/大）。"""
+def lane_demand_weight_ranges(lanes: "SortingLanes", spec: str) -> list[tuple[int, int]]:
+    """料道当前状态的下一条可进重量区间（仅料道，不含暂存）。"""
     lo, hi = SPECS[spec]["range"]
-    weights = spec_inventory_weights(lanes, spec)
+    weights = lane_inventory_weights(lanes, spec)
     if not weights:
         return [(lo, hi)]
     demand = BoxDemandCalculator(spec, weights).calc()
+    if demand.complete:
+        return []
     if demand.next_fish_ranges:
         return list(demand.next_fish_ranges)
-    narrowed = diagnostic_need_weight_ranges(lanes, spec)
-    if narrowed:
-        return narrowed
+    total = sum(weights)
+    if total < TARGET_MIN:
+        mid = (lo + hi) // 2
+        return [(mid + 1, hi)]
+    if total > TARGET_MAX:
+        mid = (lo + hi) // 2
+        return [(lo, mid)]
     return [(lo, hi)]
 
 
-def lane_demand_weight_ranges(
-    lanes: "SortingLanes",
-    spec: str,
-    bucket: str,
-) -> list[tuple[int, int]]:
-    """封箱出库用：规格动态需求 ∩ 小/中/大分区区间。"""
-    bucket_rng = bucket_weight_range(spec, bucket)
-    for rlo, rhi in spec_demand_weight_ranges(lanes, spec):
-        hit = _intersect_interval((rlo, rhi), bucket_rng)
-        if hit:
-            return [hit]
-    return [bucket_rng]
+def fish_matches_lane_demand(lanes: "SortingLanes", fish: Fish) -> bool:
+    """判断鱼是否满足料道当前动态需求（计算需求.py）。"""
+    if fish.spec is None:
+        return False
+    weights = lane_inventory_weights(lanes, fish.spec)
+    return BoxDemandCalculator(fish.spec, weights).check_incoming_fish(
+        fish.weight
+    ).acceptable
 
 
 # ---------------------------------------------------------------------------
@@ -273,7 +204,6 @@ def lane_demand_weight_ranges(
 @dataclass
 class Fish:
     """单条鱼的运行时实体。"""
-
     id: int                      # 鱼 ID（批次序号）
     weight: int                  # 克重
     spec: str | None = None      # 规格名（规格外为 None）
@@ -452,13 +382,19 @@ def prefix_weights(fish_list: list[Fish]) -> list[int]:
 
 
 def spec_min_count(spec: str) -> int:
-    """作用：该规格合法装箱尾数的最小值（默认料道容量基准）。"""
+    """该规格合法装箱尾数的最小值。"""
     return min(SPECS[spec]["counts"])
 
 
+def spec_max_count(spec: str) -> int:
+    """该规格合法装箱尾数的最大值（三合一料道固定容量）。"""
+    return max(SPECS[spec]["counts"])
+
+
 def spec_total_capacity(spec: str, cap_factor: int = DEFAULT_CAP_FACTOR) -> int:
-    """某规格三合一料道总容量 = min(counts) + cap_factor。"""
-    return spec_min_count(spec) + max(1, cap_factor)
+    """三合一料道固定容量 = 最高合法装箱尾数（cap_factor 保留兼容，不参与容量计算）。"""
+    del cap_factor
+    return spec_max_count(spec)
 
 
 def record_to_fish(
@@ -803,141 +739,26 @@ class FishTracker:
 # 料道 & 装箱
 # ---------------------------------------------------------------------------
 class SortingLanes:
-    """作用：管理全部规格的小/中/大料道队列、回流队列与规格外队列。
-    前端：fifo_monitor.html 料道画布与库存可视化；index.html A/B/C 模块库存表。"""
+    """三合一料道（每规格单 FIFO）+ 暂存箱 + 规格外/回流。"""
 
     def __init__(self, specs: tuple[str, ...] = DEMO_SPECS):
-        """作用：按启用规格初始化空料道结构。
-        前端：POST /api/start 创建引擎时；GET /api/state.modules 库存数据源。"""
         self.specs = specs
-        self.queues: dict[str, dict[str, list[Fish]]] = {
-            spec: {b: [] for b in BUCKETS} for spec in specs
-        }
+        self.lane: dict[str, list[Fish]] = {spec: [] for spec in specs}
         self.outside: list[Fish] = []
         self.reflow: list[Fish] = []
         self.storage: list[Fish] = []
         self.storage_capacity = DEFAULT_STORAGE_CAPACITY
 
     def storage_for_spec(self, spec: str) -> list[Fish]:
-        """作用：取暂存箱内某规格的鱼（入箱仍 FIFO append；出库按需求区间匹配）。
-        前端：GET /api/state.storage_box.by_spec。"""
         return [f for f in self.storage if f.spec == spec]
 
     def storage_count(self) -> int:
-        """暂存箱当前鱼条数。"""
         return len(self.storage)
 
     def bucket_fish(self, spec: str, bucket: str) -> list[Fish]:
-        """作用：料道 FIFO 视图（暂存鱼经需求匹配出库后进入料道，不在此合并）。"""
-        return self.queues[spec][bucket]
-
-    def pick_storage_matching(
-        self,
-        spec: str,
-        bucket: str,
-        weight_ranges: list[tuple[int, int]],
-        limit: int,
-    ) -> list[Fish]:
-        """按广播需求重量区间从暂存箱取鱼（非队头顺序，优先等待最久者）。"""
-        if limit <= 0:
-            return []
-        candidates = [
-            f
-            for f in self.storage
-            if f.spec == spec
-            and f.bucket == bucket
-            and weight_in_ranges(f.weight, weight_ranges)
-        ]
-        candidates.sort(key=lambda f: f.enter_time)
-        picked_ids = {f.id for f in candidates[:limit]}
-        return self.remove_from_storage_ids(picked_ids)
-
-    def pick_storage_matching_spec(
-        self,
-        spec: str,
-        weight_ranges: list[tuple[int, int]],
-        limit: int,
-    ) -> list[Fish]:
-        """按规格广播重量区间从暂存箱取鱼（不限小/中/大，优先等待最久）。"""
-        if limit <= 0:
-            return []
-        candidates = [
-            f
-            for f in self.storage
-            if f.spec == spec and weight_in_ranges(f.weight, weight_ranges)
-        ]
-        candidates.sort(key=lambda f: f.enter_time)
-        picked_ids = {f.id for f in candidates[:limit]}
-        return self.remove_from_storage_ids(picked_ids)
-
-    def transfer_storage_to_lane(
-        self,
-        spec: str,
-        bucket: str,
-        weight_ranges: list[tuple[int, int]],
-        limit: int,
-        tick: int,
-        tracker: FishTracker,
-        cap_factor: int = DEFAULT_CAP_FACTOR,
-    ) -> list[Fish]:
-        """暂存箱 → 料道：满足需求区间的鱼直接出库入道（不要求 FIFO 队头）。"""
-        lane = self.queues[spec][bucket]
-        room = max(0, spec_total_capacity(spec, cap_factor) - self.total_in_spec(spec))
-        take = min(limit, room)
-        if take <= 0:
-            return []
-        picked = self.pick_storage_matching(spec, bucket, weight_ranges, take)
-        for fish in picked:
-            fish.enter_time = tick
-            lane.append(fish)
-            tracker.register(fish, tick, status="queued")
-        return picked
-
-    def transfer_storage_for_spec(
-        self,
-        spec: str,
-        weight_ranges: list[tuple[int, int]],
-        limit: int,
-        tick: int,
-        tracker: FishTracker,
-        cap_factor: int = DEFAULT_CAP_FACTOR,
-    ) -> list[Fish]:
-        """暂存箱 → 规格料道：按广播区间出库，自动落入对应小/中/大分区。"""
-        room = max(0, spec_total_capacity(spec, cap_factor) - self.total_in_spec(spec))
-        take = min(limit, room)
-        if take <= 0:
-            return []
-        picked = self.pick_storage_matching_spec(spec, weight_ranges, take)
-        for fish in picked:
-            fish.enter_time = tick
-            bucket = fish.bucket or classify_bucket(spec, fish.weight)
-            lane = self.queues[spec][bucket]
-            lane.append(fish)
-            tracker.register(fish, tick, status="queued")
-        return picked
-
-    def try_push_storage(self, fish: Fish, tick: int, tracker: FishTracker) -> bool:
-        """
-        将鱼 append 到暂存箱尾部（process_one → _push_intake_storage 调用）。
-
-        满容（len(storage) >= storage_capacity）或 spec 为空时返回 False。
-        成功时更新 fish.enter_time 并 tracker.mark_stored。
-        """
-        if fish.spec is None or len(self.storage) >= self.storage_capacity:
-            return False
-        fish.enter_time = tick
-        self.storage.append(fish)
-        tracker.mark_stored(fish, tick)
-        return True
-
-    def pop_storage_head(self) -> Fish | None:
-        """弹出暂存箱队头鱼（FIFO）。"""
-        if not self.storage:
-            return None
-        return self.storage.pop(0)
+        return [f for f in self.lane.get(spec, []) if f.bucket == bucket]
 
     def remove_from_storage_ids(self, fish_ids: set[int]) -> list[Fish]:
-        """按 ID 集合从暂存箱移除鱼，返回被移除列表。"""
         removed: list[Fish] = []
         kept: list[Fish] = []
         for fish in self.storage:
@@ -948,25 +769,32 @@ class SortingLanes:
         self.storage = kept
         return removed
 
-    def total_available_for_spec(self, spec: str) -> int:
-        """某规格料道+暂存箱可用鱼总数。"""
-        return self.total_in_spec(spec) + len(self.storage_for_spec(spec))
+    def try_push_storage(self, fish: Fish, tick: int, tracker: FishTracker) -> bool:
+        if fish.spec is None or len(self.storage) >= self.storage_capacity:
+            return False
+        fish.enter_time = tick
+        self.storage.append(fish)
+        tracker.mark_stored(fish, tick)
+        return True
+
+    def total_in_spec(self, spec: str) -> int:
+        return len(self.lane.get(spec, []))
+
+    def lane_room(self, spec: str, cap_factor: int = DEFAULT_CAP_FACTOR) -> int:
+        return max(0, spec_total_capacity(spec, cap_factor) - self.total_in_spec(spec))
+
+    @staticmethod
+    def _sync_head_enter_time(lane: list[Fish], tick: int) -> None:
+        if lane:
+            lane[0].enter_time = tick
 
     def _put_in_lane(self, fish: Fish, tick: int) -> str:
-        """作用：将鱼放入对应规格+小中大料道队尾。
-        前端：fifo_monitor.html 鱼入料道动画；index.html 模块 small/medium/large 计数。"""
         fish.enter_time = tick
-        self.queues[fish.spec][fish.bucket].append(fish)
+        self.lane[fish.spec].append(fish)
         return fish.bucket
 
     def enqueue(self, fish: Fish, tick: int, tracker: FishTracker) -> str:
-        """
-        入料主入口（process_one 规格外路由 & _route_spec_intake 入道）。
-
-        规格外 → outside 队列，status=unmatched_outside，返回 "outside"；
-        规格内 → _put_in_lane 放入对应小/中/大料道队尾，返回 bucket 名。
-        """
-        if fish.spec is None or fish.spec not in self.queues:
+        if fish.spec is None or fish.spec not in self.lane:
             fish.enter_time = tick
             self.outside.append(fish)
             tracker.register(fish, tick, status="unmatched_outside")
@@ -975,206 +803,74 @@ class SortingLanes:
         tracker.register(fish, tick, status="queued")
         return bucket
 
-    def try_enqueue_reflow(self, fish: Fish, tick: int, tracker: FishTracker, cap_factor: int = DEFAULT_CAP_FACTOR) -> bool:
-        """
-        回流鱼二次入道（process_one → _process_reflow_intake 调用）。
-
-        料道三合一未满则 _put_in_lane 成功返回 True；满则 False 留待下步。
-        """
-        if fish.spec is None or fish.spec not in self.queues:
+    def try_enqueue_reflow(
+        self,
+        fish: Fish,
+        tick: int,
+        tracker: FishTracker,
+        cap_factor: int = DEFAULT_CAP_FACTOR,
+    ) -> bool:
+        if fish.spec is None or fish.spec not in self.lane:
             return False
-        if self.total_in_spec(fish.spec) >= spec_total_capacity(fish.spec, cap_factor):
+        if not fish_matches_lane_demand(self, fish):
+            return False
+        if self.lane_room(fish.spec, cap_factor) <= 0:
             return False
         self._put_in_lane(fish, tick)
         tracker.register(fish, tick, status="queued")
         return True
 
-    def total_in_spec(self, spec: str) -> int:
-        """作用：统计某规格三路料道鱼总数。
-        前端：index.html 模块库存 total 列；封箱前置条件判断。"""
-        return sum(len(self.queues[spec][b]) for b in BUCKETS)
-
-    @staticmethod
-    def _sync_head_enter_time(lane: list[Fish], tick: int) -> None:
-        """作用：队头变更后重置队头 enter_time，超时只统计担任队头的等待时间。
-        前端：fifo_monitor「队首超时」控制项；GET /api/state 超时回流日志。"""
-        if lane:
-            lane[0].enter_time = tick
-
-    def remove_plan(self, plan: BoxPlan, tick: int, tracker: FishTracker) -> list[Fish]:
-        """
-        按封箱方案从暂存箱+料道移除鱼（process_one → _apply_box_plan 调用）。
-
-        plan.pick_ids 非空时按 ID 精确移除（DFS 自由组合）；
-        否则按 plan.parts 小/中/大数量从队头前缀取（兼容旧逻辑）。
-        移除后 tracker.mark_packed，plan.fish 填入实际移除列表。
-        """
-        removed: list[Fish] = []
-        if plan.pick_ids:
-            targets = set(plan.pick_ids)
-            removed.extend(self.remove_from_storage_ids(targets))
-            for bucket in BUCKETS:
-                lane = self.queues[plan.spec][bucket]
-                picked = [f for f in lane if f.id in targets]
-                if not picked:
-                    continue
-                self.queues[plan.spec][bucket] = [f for f in lane if f.id not in targets]
-                removed.extend(picked)
-                self._sync_head_enter_time(self.queues[plan.spec][bucket], tick)
-        else:
-            for bucket in BUCKETS:
-                need = plan.parts[bucket]
-                if not need:
-                    continue
-                ranges = lane_demand_weight_ranges(self, plan.spec, bucket)
-                from_storage = self.pick_storage_matching(
-                    plan.spec, bucket, ranges, need
-                )
-                removed.extend(from_storage)
-                need -= len(from_storage)
-                if need:
-                    chunk = self.queues[plan.spec][bucket][:need]
-                    del self.queues[plan.spec][bucket][:need]
-                    removed.extend(chunk)
-                    self._sync_head_enter_time(self.queues[plan.spec][bucket], tick)
-        for fish in removed:
-            tracker.mark_packed(fish, tick)
-        plan.fish = removed
-        return removed
-
-    def divert_head_to_storage(
-        self,
-        spec: str,
-        bucket: str,
-        tick: int,
-        tracker: FishTracker,
-    ) -> tuple[Fish | None, str]:
-        """
-        弹出料道队头鱼尝试送入暂存箱（_make_room_for_intake 腾位调用）。
-
-        返回 (fish, outcome):
-            stored       成功入暂存箱
-            storage_full 暂存箱满，鱼记 unmatched_storage_full
-            ""           料道为空
-        """
-        lane = self.queues[spec][bucket]
-        if not lane:
-            return None, ""
-        fish = lane.pop(0)
-        self._sync_head_enter_time(lane, tick)
-        if self.try_push_storage(fish, tick, tracker):
-            return fish, "stored"
-        tracker.mark_unmatched(fish, "unmatched_storage_full", tick=tick)
-        return fish, "storage_full"
-
-    def divert_head(self, spec: str, bucket: str, tick: int, reason: str, tracker: FishTracker) -> Fish | None:
-        """作用：弹出料道队头鱼送入回流队列（防堵：超容）。
-        前端：两页回流统计；fifo_monitor 运行日志「回流」；GET /api/state 回流日志。"""
-        lane = self.queues[spec][bucket]
+    def pop_lane_head(self, spec: str, tick: int) -> Fish | None:
+        lane = self.lane.get(spec, [])
         if not lane:
             return None
         fish = lane.pop(0)
         self._sync_head_enter_time(lane, tick)
-        fish.rounds += 1
-        fish.enter_time = tick
-        self.reflow.append(fish)
-        tracker.mark_reflow(fish, tick, reason)
         return fish
+
+    def take_lane_all(self, spec: str) -> list[Fish]:
+        fish_list = self.lane.get(spec, [])
+        taken = list(fish_list)
+        self.lane[spec] = []
+        return taken
+
+    def transfer_storage_to_lane(
+        self,
+        spec: str,
+        candidates: list[Fish],
+        tick: int,
+        tracker: FishTracker,
+        cap_factor: int = DEFAULT_CAP_FACTOR,
+    ) -> list[Fish]:
+        """暂存箱 → 三合一料道：按候选列表顺序入道（调用方负责排序/筛选）。"""
+        room = self.lane_room(spec, cap_factor)
+        if room <= 0 or not candidates:
+            return []
+        moved: list[Fish] = []
+        for fish in candidates[:room]:
+            self.remove_from_storage_ids({fish.id})
+            fish.enter_time = tick
+            self.lane[spec].append(fish)
+            tracker.register(fish, tick, status="queued")
+            moved.append(fish)
+        return moved
 
     def discard_head_timeout(
         self,
         spec: str,
-        bucket: str,
         tick: int,
         lane_wait_s: int,
         tracker: FishTracker,
     ) -> Fish | None:
-        """
-        弹出料道队头超时鱼并记尾料（process_one → _anti_block 调用）。
-
-        不进回流队列；tracker.mark_timeout_tail 写入 unmatched_timeout。
-        队头变更后 _sync_head_enter_time 重置新队首 enter_time。
-        """
-        lane = self.queues[spec][bucket]
-        if not lane:
-            return None
-        fish = lane.pop(0)
-        self._sync_head_enter_time(lane, tick)
-        tracker.mark_timeout_tail(fish, tick, lane_wait_s)
+        fish = self.pop_lane_head(spec, tick)
+        if fish:
+            tracker.mark_timeout_tail(fish, tick, lane_wait_s)
         return fish
 
-    def iter_lanes(self):
-        """作用：迭代所有启用规格的 (spec, bucket, lane) 三元组。
-        前端：无直接 UI；批末扫尾 mark_unmatched 时遍历料道。"""
+    def iter_lane_fish(self):
         for spec in self.specs:
-            for bucket in BUCKETS:
-                yield spec, bucket, self.queues[spec][bucket]
-
-
-class BoxPlanner:
-    """作用：DFS 自由组合封箱（plan/深度搜索.py）；三合一料道容量下不按队头顺序取鱼。
-    料道较小时 DFS 全局择优；积压时搜各路队头窗口，无解则等待下一 tick。
-    前端：index.html「完成箱数」；fifo_monitor.html 装箱工位。"""
-
-    @staticmethod
-    def _dfs_search_buffer(lanes: SortingLanes, spec: str) -> list[Fish]:
-        """取 DFS 搜索窗口：暂存箱鱼优先，再取料道（小/中/大）。"""
-        buf = lanes.storage_for_spec(spec)
-        q = lanes.queues[spec]
-        lane_total = lanes.total_in_spec(spec)
-        max_buf = dfs_max_buffer_for_spec(spec)
-        if lane_total + len(buf) <= max_buf:
-            for bucket in BUCKETS:
-                buf.extend(q[bucket])
-            return buf
-        window = dfs_window_per_bucket_for_spec(spec)
-        for bucket in BUCKETS:
-            buf.extend(q[bucket][:window])
-        return buf
-
-    @staticmethod
-    def _plan_from_indices(buffer: list[Fish], spec: str, indices: list[int], count: int, weight: int) -> BoxPlan:
-        picked = [buffer[i] for i in indices]
-        parts = {b: 0 for b in BUCKETS}
-        for fish in picked:
-            parts[fish.bucket] += 1
-        return BoxPlan(
-            spec=spec,
-            count=count,
-            weight=weight,
-            parts=parts,
-            pick_ids=frozenset(f.id for f in picked),
-        )
-
-    def find_plan(self, lanes: SortingLanes, spec: str) -> BoxPlan | None:
-        """
-        DFS 搜索可封箱方案（process_one → _try_pack_spec 循环调用）。
-
-        步骤:
-            1. _dfs_search_buffer 取暂存+料道搜索窗口
-            2. dfs_find_best_from_items 在窗口内自由组合
-            3. 总重 4980~5030g 且尾数合法则 _plan_from_indices 生成 BoxPlan
-
-        无解返回 None，本 tick 该规格不封箱。
-        """
-        if spec not in SPECS:
-            return None
-        if lanes.total_available_for_spec(spec) < min(SPECS[spec]["counts"]):
-            return None
-
-        buffer = self._dfs_search_buffer(lanes, spec)
-        max_buf = dfs_max_buffer_for_spec(spec)
-        result = dfs_find_best_from_items(
-            buffer,
-            spec,
-            max_buffer=max_buf,
-            max_nodes=max(DFS_MAX_NODES, max_buf * 8000),
-        )
-        if result:
-            indices, count, weight = result
-            return self._plan_from_indices(buffer, spec, indices, count, weight)
-
-        return None
+            for fish in self.lane[spec]:
+                yield spec, fish
 
 
 class SchedulerEngine:
@@ -1190,11 +886,14 @@ class SchedulerEngine:
         cap_factor: int = DEFAULT_CAP_FACTOR,
         verbose: bool = False,
         log_every: int = 500,
+        quiet: bool = False,
         stop_mode: str = STOP_MODE_COUNT,
         stop_count: int = DEFAULT_TOTAL,
         stop_weight_g: int = DEFAULT_STOP_WEIGHT_G,
         timeout_clock: str = DEFAULT_TIMEOUT_CLOCK,
         exclude_outside_stats: bool = False,
+        timeout_in_finish: bool = False,
+        log_file: Path | None | bool = True,
     ):
         """初始化引擎：批次、料道、追踪器、统计。
         exclude_outside_stats：批量测试用，规格外不计入料/结束条件。"""
@@ -1206,7 +905,9 @@ class SchedulerEngine:
         self.cap_factor = cap_factor                  # 三合一料道容量倍率：min(counts) + cap_factor
         self.verbose = verbose                        # 是否打印详细调试日志
         self.log_every = log_every                    # 每入料 N 条打印一次进度
-        self.exclude_outside_stats = exclude_outside_stats  # 批量测试：规格外不计入料/结束条件
+        self.quiet = quiet                            # 静默：不打印中途进度/超时/峰值
+        self.exclude_outside_stats = exclude_outside_stats
+        self.timeout_in_finish = timeout_in_finish  # 批末扫尾是否继续超时淘汰（默认否，剩余直接标批末尾料）
         self.stop_mode = stop_mode if stop_mode in (STOP_MODE_COUNT, STOP_MODE_WEIGHT) else STOP_MODE_COUNT  # 结束模式：count 按条数 / weight 按总重
         self.stop_count = max(1, stop_count)          # 按条数结束时的目标入料条数
         self.stop_weight_g = max(1, stop_weight_g)    # 按总重结束时的目标克重
@@ -1226,7 +927,6 @@ class SchedulerEngine:
 
         # --- 核心子模块 ---
         self.lanes = SortingLanes(specs=specs)        # 料道/回流/规格外/暂存箱状态
-        self.planner = BoxPlanner()                   # DFS 配盒规划器
         self.tracker = FishTracker()                  # 单鱼生命周期追踪（入队/装箱/回流/尾料）
         self.stats = Stats()                          # 累计统计（入料、成盒、回流、暂存等）
         self.cartons: list[BoxPlan] = []               # 已成盒记录列表
@@ -1239,6 +939,49 @@ class SchedulerEngine:
         # --- 日志缓冲 ---
         self.timeout_tail_log: list[dict] = []         # 超时尾料明细（导出 CSV）
         self._timeout_warn_ratio = 0.8                # 等待达阈值 80% 时打预警
+        self.log_file = log_file                        # True=自动路径 / Path=指定 / False|None=不写文件
+        self.log_file_path: Path | None = None
+        self._log_fp: TextIO | None = None
+
+    def _default_log_path(self) -> Path:
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        if self.stop_mode == STOP_MODE_WEIGHT:
+            stop_tag = f"w{self.stop_weight_g // 1_000_000}t"
+        else:
+            stop_tag = f"n{self.stop_count}"
+        return _root / "data" / f"run_log_seed{self.seed}_{stop_tag}_{ts}.log"
+
+    def _open_run_log(self) -> Path | None:
+        """打开运行日志文件（追加写入，实时 flush）。"""
+        if self.log_file is False or self.log_file is None:
+            return None
+        path = self._default_log_path() if self.log_file is True else Path(self.log_file)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self._log_fp = path.open("a", encoding="utf-8")
+        self.log_file_path = path
+        header = (
+            f"# run_log seed={self.seed} started={datetime.now().isoformat(timespec='seconds')}\n"
+            f"# specs={','.join(self.specs)} move_timeout={self.move_timeout} "
+            f"timeout_clock={self.timeout_clock}\n"
+        )
+        self._log_fp.write(header)
+        self._log_fp.flush()
+        return path
+
+    def _close_run_log(self) -> None:
+        if self._log_fp is not None:
+            self._log_fp.write(f"# finished={datetime.now().isoformat(timespec='seconds')}\n")
+            self._log_fp.flush()
+            self._log_fp.close()
+            self._log_fp = None
+
+    def _emit(self, msg: str, *, console: bool = True, file: bool = True) -> None:
+        """统一输出：可选写控制台 + 运行日志文件。"""
+        if file and self._log_fp is not None:
+            self._log_fp.write(msg + "\n")
+            self._log_fp.flush()
+        if console:
+            print(msg, flush=True)
 
     def _tick_unit(self) -> str:
         return "s" if self.timeout_clock == TIMEOUT_CLOCK_REAL else "步"
@@ -1247,14 +990,21 @@ class SchedulerEngine:
         return f"t={self.tick:05d}{self._tick_unit()}"
 
     def _log(self, tag: str, msg: str, *, force: bool = False) -> None:
-        """verbose 或 force 时打印带分类标签的日志。"""
-        if self.verbose or force:
-            print(f"[{self._tick_prefix()}][{tag}] {msg}")
+        """verbose 或 force 时输出；quiet 时仍写入日志文件（force/verbose）。"""
+        if not force and not self.verbose and self.quiet:
+            return
+        text = f"[{self._tick_prefix()}][{tag}] {msg}"
+        to_console = not self.quiet and (self.verbose or force)
+        to_file = self._log_fp is not None and (force or self.verbose or not self.quiet)
+        if to_console or to_file:
+            self._emit(text, console=to_console, file=to_file)
 
     def _log_flow(self, msg: str) -> None:
-        """verbose 时打印单条鱼/物料流向。"""
-        if self.verbose:
-            self._log("流向", msg)
+        """verbose 时打印单条鱼/物料流向（quiet 时仅写文件）。"""
+        if not self.verbose:
+            return
+        text = f"[{self._tick_prefix()}][流向] {msg}"
+        self._emit(text, console=not self.quiet, file=self._log_fp is not None)
 
     def _storage_status(self) -> str:
         cur = self.lanes.storage_count()
@@ -1272,8 +1022,9 @@ class SchedulerEngine:
     def _lane_status(self, spec: str) -> str:
         total = self.lanes.total_in_spec(spec)
         cap = spec_total_capacity(spec, self.cap_factor)
-        q = self.lanes.queues[spec]
-        parts = "/".join(f"{BUCKET_LABEL[b]}{len(q[b])}" for b in BUCKETS)
+        parts = "/".join(
+            f"{BUCKET_LABEL[b]}{len(self.lanes.bucket_fish(spec, b))}" for b in BUCKETS
+        )
         return f"料道 {spec.upper()} {total}/{cap} ({parts})"
 
     def _note_storage_peak(self) -> None:
@@ -1298,29 +1049,28 @@ class SchedulerEngine:
         warn_at = max(1, int(self.move_timeout * self._timeout_warn_ratio))
         unit = self._tick_unit()
         if self.lanes.storage:
-            fish = min(self.lanes.storage, key=lambda f: f.enter_time)
-            dwell = self.tick - fish.enter_time
+            fish = max(self.lanes.storage, key=self._fish_system_dwell)
+            dwell = self._fish_system_dwell(fish)
             if warn_at <= dwell < self.move_timeout:
                 self._log(
                     "超时预警",
                     f"暂存 #{fish.id} {fish.spec.upper()}-{BUCKET_LABEL[fish.bucket]} "
-                    f"{fish.weight}g 已等 {dwell}{unit}/{self.move_timeout}{unit} "
+                    f"{fish.weight}g 系统已停 {dwell}{unit}/{self.move_timeout}{unit} "
                     f"({dwell * 100 // self.move_timeout}%) | {self._storage_status()}",
                 )
         for spec in self.specs:
-            for bucket in BUCKETS:
-                lane = self.lanes.queues[spec][bucket]
-                if not lane:
-                    continue
-                head = lane[0]
-                dwell = self.tick - head.enter_time
-                if warn_at <= dwell < self.move_timeout:
-                    self._log(
-                        "超时预警",
-                        f"料道 #{head.id} {spec.upper()}-{BUCKET_LABEL[bucket]} "
-                        f"{head.weight}g 队首已等 {dwell}{unit}/{self.move_timeout}{unit} "
-                        f"({dwell * 100 // self.move_timeout}%)",
-                    )
+            lane = self.lanes.lane[spec]
+            if not lane:
+                continue
+            head = lane[0]
+            dwell = self._fish_system_dwell(head)
+            if warn_at <= dwell < self.move_timeout:
+                self._log(
+                    "超时预警",
+                    f"料道 #{head.id} {spec.upper()}-{BUCKET_LABEL[head.bucket]} "
+                    f"{head.weight}g 系统已停 {dwell}{unit}/{self.move_timeout}{unit} "
+                    f"({dwell * 100 // self.move_timeout}%)",
+                )
 
     def _sync_real_tick(self) -> int:
         """真实系统时间（秒）更新 tick。"""
@@ -1340,49 +1090,29 @@ class SchedulerEngine:
         return self.tick
 
     def _best_diagnostic_for_spec(self, spec: str) -> dict:
-        """诊断某规格封箱状态（可装/不足/偏轻/偏重/接近）。"""
+        """诊断某规格料道封箱状态（可装/不足/偏轻/偏重/接近）。"""
         if spec not in self.specs:
-            return {"kind": "off", "short": "未启用", "need_bucket": None, "need_count": 0}
-        q = self.lanes.queues[spec]
-        q_small, q_medium, q_large = q["small"], q["medium"], q["large"]
-        total = len(q_small) + len(q_medium) + len(q_large)
-        min_cnt = min(SPECS[spec]["counts"])
+            return {"kind": "off", "short": "未启用", "need_count": 0}
+        weights = lane_inventory_weights(self.lanes, spec)
+        total = len(weights)
+        min_cnt = spec_min_count(spec)
         if total < min_cnt:
             return {
                 "kind": "bad",
                 "short": "不足",
-                "need_bucket": None,
                 "need_count": min_cnt - total,
             }
-        if self.planner.find_plan(self.lanes, spec):
-            return {"kind": "good", "short": "可装", "need_bucket": None, "need_count": 0}
-        p_small = prefix_weights(q_small)
-        p_medium = prefix_weights(q_medium)
-        p_large = prefix_weights(q_large)
-        best: dict | None = None
-        for count in SPECS[spec]["counts"]:
-            for a in range(min(len(q_small), count) + 1):
-                for b in range(min(len(q_medium), count - a) + 1):
-                    c = count - a - b
-                    if c > len(q_large):
-                        continue
-                    weight = p_small[a] + p_medium[b] + p_large[c]
-                    if weight < TARGET_MIN:
-                        diff = TARGET_MIN - weight
-                    elif weight > TARGET_MAX:
-                        diff = weight - TARGET_MAX
-                    else:
-                        diff = 0
-                    score = diff * 10 + abs(weight - TARGET_MID)
-                    if best is None or score < best["score"]:
-                        best = {"count": count, "weight": weight, "diff": diff, "score": score}
-        if not best:
-            return {"kind": "bad", "short": "等待", "need_bucket": "medium", "need_count": 1}
-        if best["weight"] < TARGET_MIN:
-            return {"kind": "warn", "short": "偏轻", "need_bucket": "large", "need_count": 1}
-        if best["weight"] > TARGET_MAX:
-            return {"kind": "warn", "short": "偏重", "need_bucket": "small", "need_count": 1}
-        return {"kind": "good", "short": "接近", "need_bucket": None, "need_count": 0}
+        demand = BoxDemandCalculator(spec, weights).calc()
+        if demand.meets_requirement:
+            return {"kind": "good", "short": "可装", "need_count": 0}
+        total_w = sum(weights)
+        if total_w < TARGET_MIN:
+            return {"kind": "warn", "short": "偏轻", "need_count": 1}
+        if total_w > TARGET_MAX:
+            return {"kind": "warn", "short": "偏重", "need_count": 1}
+        if demand.next_fish_ranges:
+            return {"kind": "bad", "short": "等待", "need_count": 1}
+        return {"kind": "good", "short": "接近", "need_count": 0}
 
     def _demand_for_spec(self, spec: str) -> dict:
         """计算单规格的暂存出库需求（active/priority/count/weight_ranges）。"""
@@ -1396,7 +1126,7 @@ class SchedulerEngine:
                 "weight_ranges": [(lo, hi)],
                 "reason": "未启用",
             }
-        weight_ranges = spec_demand_weight_ranges(self.lanes, spec)
+        weight_ranges = lane_demand_weight_ranges(self.lanes, spec)
         diag = self._best_diagnostic_for_spec(spec)
         short = diag["short"]
 
@@ -1456,47 +1186,142 @@ class SchedulerEngine:
         items.sort(key=lambda d: (d["priority"], d["spec"]))
         return [d for d in items if d.get("active") and d.get("priority", 9) <= 3]
 
-    def _apply_box_plan(self, plan: BoxPlan) -> None:
-        """
-        执行一次封箱方案。
+    def runtime_config(self) -> dict[str, Any]:
+        """返回当前引擎全部运行参数（供启动打印或外部读取）。"""
+        unit = self._tick_unit()
+        clock_label = "进料步进" if self.timeout_clock == TIMEOUT_CLOCK_INTAKE else "真实时间"
+        if self.stop_mode == STOP_MODE_WEIGHT:
+            stop_target = f"总重 {self.stop_weight_g / 1_000_000:.3f}t ({self.stop_weight_g:,}g)"
+        else:
+            stop_target = f"条数 {self.stop_count}"
+        lane_caps = {
+            spec: spec_total_capacity(spec, self.cap_factor) for spec in self.specs
+        }
+        return {
+            "seed": self.seed,
+            "batch_preload": len(self.batch),
+            "batch_process": self.total_fish,
+            "stop_mode": self.stop_mode,
+            "stop_target": stop_target,
+            "enabled_specs": ",".join(self.specs),
+            "spec_count": len(self.specs),
+            "lane_capacity_per_spec": lane_caps,
+            "cap_factor": f"{self.cap_factor} (料道容量已固定为最高成盒尾数)",
+            "move_timeout": f"{self.move_timeout}{unit}",
+            "timeout_clock": f"{self.timeout_clock} ({clock_label})",
+            "storage_capacity": self.lanes.storage_capacity,
+            "target_carton_g": f"{TARGET_MIN}-{TARGET_MAX}g (mid {TARGET_MID}g)",
+            "interval_s": self.interval,
+            "log_every": self.log_every,
+            "verbose": self.verbose,
+            "quiet": self.quiet,
+            "exclude_outside_stats": self.exclude_outside_stats,
+            "timeout_in_finish": self.timeout_in_finish,
+        }
 
-        变量:
-            plan: DFS 搜索得到的 BoxPlan（含规格、尾数、总重、pick_ids）
-            storage_before: 封箱前暂存箱内鱼 ID 集合，用于统计 storage_packed
-        """
-        storage_before = {f.id for f in self.lanes.storage}
-        self.lanes.remove_plan(plan, self.tick, self.tracker)
-        self.stats.storage_packed += sum(
-            1 for f in plan.fish if f.id in storage_before
+    def print_config(self) -> None:
+        """启动时打印全部运行参数。"""
+        cfg = self.runtime_config()
+        self._emit("=" * 64)
+        self._emit("运行参数")
+        self._emit("=" * 64)
+        labels = {
+            "seed": "随机种子",
+            "batch_preload": "批次预加载条数",
+            "batch_process": "本批处理条数",
+            "stop_mode": "结束模式",
+            "stop_target": "结束目标",
+            "enabled_specs": "启用规格",
+            "spec_count": "启用规格数",
+            "lane_capacity_per_spec": "各规格料道容量",
+            "cap_factor": "料道扩容系数",
+            "move_timeout": "移动超时阈值",
+            "timeout_clock": "超时计时",
+            "storage_capacity": "暂存箱容量",
+            "target_carton_g": "盒重目标",
+            "interval_s": "入料间隔(秒)",
+            "log_every": "进度日志间隔",
+            "verbose": "详细流向日志",
+            "quiet": "静默模式",
+            "exclude_outside_stats": "规格外不计入统计",
+            "timeout_in_finish": "批末继续超时淘汰",
+            "log_file": "运行日志文件",
+        }
+        cfg = {**cfg, "log_file": str(self.log_file_path or "(未启用)")}
+        for key, label in labels.items():
+            val = cfg.get(key, "")
+            if key == "lane_capacity_per_spec" and isinstance(val, dict):
+                cap_str = ", ".join(f"{s}={c}" for s, c in val.items())
+                self._emit(f"  {label:16s}: {cap_str}")
+            else:
+                self._emit(f"  {label:16s}: {val}")
+        self._emit("=" * 64)
+
+    def print_quick_summary(self, wall_seconds: float) -> None:
+        """单行快速结果摘要。"""
+        m = self.build_final_metrics()
+        inp = self.stats.input_count
+        pack_pct = round(m["packed_fish"] / inp * 100, 2) if inp else 0.0
+        if self.stop_mode == STOP_MODE_WEIGHT:
+            target = f"weight={self.stop_weight_g / 1_000_000:.1f}t"
+        else:
+            target = f"count={self.stop_count}"
+        w_min = w_max = w_avg = "-"
+        if self.cartons:
+            weights = [c.weight for c in self.cartons]
+            w_min, w_max = min(weights), max(weights)
+            w_avg = f"{sum(weights) / len(weights):.0f}"
+        self._emit(
+            f"[结果] seed={self.seed} {target} specs={','.join(self.specs)} | "
+            f"入{inp}({self.stats.input_weight / 1_000_000:.3f}t) "
+            f"盒{m['cartons']} 装{m['packed_fish']}({pack_pct}%) "
+            f"盒重{w_min}~{w_max}g avg{w_avg} | "
+            f"超时{m['timeout_total_count']} "
+            f"暂存峰值{m['storage_peak']}/{m['storage_capacity']}({m['storage_peak_pct']}%) "
+            f"批末尾{m['tail_batch_count']} | "
+            f"tick={self.tick} wall={wall_seconds:.2f}s"
         )
+
+    def _seal_lane_box(self, spec: str) -> BoxPlan | None:
+        """料道鱼达标时整道封箱（需求计算，无 DFS）。"""
+        weights = lane_inventory_weights(self.lanes, spec)
+        if not weights:
+            return None
+        demand = BoxDemandCalculator(spec, weights).calc()
+        if not demand.meets_requirement:
+            return None
+        fish_list = self.lanes.take_lane_all(spec)
+        parts = {b: 0 for b in BUCKETS}
+        for fish in fish_list:
+            parts[fish.bucket] += 1
+        plan = BoxPlan(
+            spec=spec,
+            count=len(fish_list),
+            weight=sum(weights),
+            parts=parts,
+            fish=fish_list,
+        )
+        for fish in fish_list:
+            self.tracker.mark_packed(fish, self.tick)
         self.stats.cartons += 1
         self.stats.packed_fish += plan.count
         self.cartons.append(plan)
-        parts = " + ".join(
+        parts_txt = " + ".join(
             f"{BUCKET_LABEL[b]}{plan.parts[b]}" for b in BUCKETS if plan.parts[b]
         )
         fish_ids = ",".join(f"#{f.id}" for f in plan.fish)
-        from_storage = sum(1 for f in plan.fish if f.id in storage_before)
-        src = f"含暂存{from_storage}条" if from_storage else "料道直取"
         self._log(
             "封箱",
             f"盒#{self.stats.cartons:04d} {plan.spec.upper()} {plan.count}尾 "
-            f"{plan.weight}g ({parts}) | 鱼[{fish_ids}] {src}",
+            f"{plan.weight}g ({parts_txt}) | 鱼[{fish_ids}] 料道直取",
+            force=True,
         )
+        return plan
 
     def _try_pack_spec(self, spec: str) -> int:
-        """
-        对单个规格循环尝试 DFS 封箱，直至 planner.find_plan 返回 None。
-
-        返回:
-            packed: 本步该规格成功封箱次数
-        """
+        """单规格料道达标即封箱，循环直到无法封箱。"""
         packed = 0
-        while True:
-            plan = self.planner.find_plan(self.lanes, spec)
-            if plan is None:
-                break
-            self._apply_box_plan(plan)
+        while self._seal_lane_box(spec):
             packed += 1
         return packed
 
@@ -1515,36 +1340,12 @@ class SchedulerEngine:
         return packed
 
     def _intake_weight_ranges(self, spec: str) -> list[tuple[int, int]]:
-        """
-        计算入料路由时「最需要进道」的克重区间。
-
-        逻辑:
-            料道鱼数 < min(counts) → 放宽为整规格区间；
-            否则用 BoxDemandCalculator 动态需求；
-            仍无解时用 diagnostic_need_weight_ranges 偏轻/偏重诊断收窄。
-        """
-        lo, hi = SPECS[spec]["range"]
-        lane_weights = lane_inventory_weights(self.lanes, spec)
-        min_cnt = min(SPECS[spec]["counts"])
-        if len(lane_weights) < min_cnt:
-            return [(lo, hi)]
-        demand = BoxDemandCalculator(spec, lane_weights).calc()
-        if demand.next_fish_ranges:
-            return list(demand.next_fish_ranges)
-        narrowed = diagnostic_need_weight_ranges(self.lanes, spec)
-        if narrowed:
-            return narrowed
-        return [(lo, hi)]
+        """料道当前状态下一条可进鱼的克重区间（仅料道，不含暂存）。"""
+        return lane_demand_weight_ranges(self.lanes, spec)
 
     def _intake_matches_demand(self, fish: Fish) -> bool:
-        """
-        判断 incoming 鱼的克重是否落在当前料道动态需求区间内。
-
-        用于 _route_spec_intake 决定直接入道还是进暂存箱。
-        """
-        if fish.spec is None:
-            return False
-        return weight_in_ranges(fish.weight, self._intake_weight_ranges(fish.spec))
+        """incoming 鱼是否满足料道动态需求。"""
+        return fish_matches_lane_demand(self.lanes, fish)
 
     def _push_intake_storage(self, fish: Fish, reason: str) -> bool:
         """
@@ -1575,105 +1376,25 @@ class SchedulerEngine:
         )
         return False
 
-    def _make_room_for_intake(self, fish: Fish) -> bool:
-        """
-        料道三合一已满但 incoming 鱼匹配需求时，腾出一个料道位。
-
-        策略:
-            1. 先尝试 _try_pack_spec 封箱减压；
-            2. 仍满则按诊断结果选 evict_bucket（偏重弹大分区队头，偏轻弹小分区）；
-            3. 将队头鱼 divert_head_to_storage 换入暂存箱。
-
-        变量:
-            cap: 该规格三合一料道总容量
-            diag/short: 封箱诊断（偏重/偏轻/可装等）
-            evict_bucket: 被弹出队头的分区
-            moved/outcome: 弹出结果（stored=入暂存，storage_full=箱满尾料）
-
-        返回:
-            True 腾位后料道有空位；False 无法腾位
-        """
-        spec = fish.spec
-        if spec is None:
-            return False
-        cap = spec_total_capacity(spec, self.cap_factor)
-        self._try_pack_spec(spec)
-        if self.lanes.total_in_spec(spec) < cap:
-            return True
-
-        diag = self._best_diagnostic_for_spec(spec)
-        short = diag.get("short", "")
-        if short == "偏重" or fish.bucket == "small":
-            evict_bucket = "large"
-        elif short == "偏轻" or fish.bucket == "large":
-            evict_bucket = "small"
-        else:
-            evict_bucket = max(
-                BUCKETS,
-                key=lambda b: len(self.lanes.queues[spec][b]),
-            )
-        lane = self.lanes.queues[spec][evict_bucket]
-        if not lane:
-            for bucket in BUCKETS:
-                if self.lanes.queues[spec][bucket]:
-                    evict_bucket = bucket
-                    lane = self.lanes.queues[spec][bucket]
-                    break
-        if not lane:
-            return False
-
-        moved, outcome = self.lanes.divert_head_to_storage(
-            spec, evict_bucket, self.tick, self.tracker
-        )
-        if moved and outcome == "stored":
-            self.stats.storage_in += 1
-            self._log_flow(
-                f"#{moved.id} {moved.weight}g {spec.upper()}-{BUCKET_LABEL[evict_bucket]} "
-                f"料道队首 → 暂存箱(为#{fish.id}让路) | {self._storage_status()}"
-            )
-            return self.lanes.total_in_spec(spec) < cap
-        return False
-
     def _route_spec_intake(self, fish: Fish) -> str:
         """
-        规格内鱼的入料路由：料道 or 暂存箱。
-
-        变量:
-            cap: 三合一料道总容量 = min(counts) + cap_factor
-            min_cnt: 该规格最小合法装箱尾数
-            total: 当前料道已有鱼数
-            matches: incoming 是否匹配动态需求区间
-
-        决策树:
-            total < min_cnt 或 (未满且 matches)     → enqueue 入料道，返回 bucket 名
-            未满但不 matches                        → 暂存箱（需求不匹配）
-            已满且 matches 且 _make_room 成功       → enqueue 入料道
-            其余                                    → 暂存箱（料道已满）
-
-        返回:
-            bucket 名（small/medium/large）或 "storage"
+        规格内鱼入料：仅满足动态需求且料道未满时入道，否则进暂存箱。
+        入道后立即尝试封箱。
         """
         spec = fish.spec
         if spec is None:
             return "outside"
         cap = spec_total_capacity(spec, self.cap_factor)
-        min_cnt = min(SPECS[spec]["counts"])
         total = self.lanes.total_in_spec(spec)
         matches = self._intake_matches_demand(fish)
 
-        if total < min_cnt or (total < cap and matches):
+        if matches and total < cap:
             bucket = self.lanes.enqueue(fish, self.tick, self.tracker)
+            self._try_pack_spec(spec)
             return bucket
 
-        if total < cap and not matches:
-            self._push_intake_storage(fish, "需求不匹配")
-            return "storage"
-
-        if matches and self._make_room_for_intake(fish):
-            bucket = self.lanes.enqueue(fish, self.tick, self.tracker)
-            return bucket
-
-        self._push_intake_storage(fish, "料道已满")
+        reason = "需求不匹配" if not matches else "料道已满"
+        self._push_intake_storage(fish, reason)
         return "storage"
 
     def _process_reflow_intake(self) -> None:
@@ -1696,45 +1417,44 @@ class SchedulerEngine:
 
     def _release_storage_by_demands(self) -> int:
         """
-        按规格广播需求从暂存箱出库到料道。
-
-        遍历 _active_storage_demands()，按 weight_ranges 匹配暂存鱼出库入道。
-
-        变量:
-            released: 本步从暂存箱释放到料道的鱼条数
-
-        返回:
-            released 条数
+        料道有空位时，从暂存箱释放满足动态需求的鱼入道。
+        优先释放系统停留最久（快超时）的鱼；每条入道后重新校验需求并尝试封箱。
         """
         if not self.lanes.storage:
             return 0
         released = 0
-        for demand in self._active_storage_demands():
-            spec = demand["spec"]
-            if spec not in self.specs:
-                continue
-            count = demand.get("count") or 0
-            if count <= 0:
-                continue
-            ranges = demand["weight_ranges"]
-            moved = self.lanes.transfer_storage_for_spec(
-                spec,
-                ranges,
-                count,
-                self.tick,
-                self.tracker,
-                self.cap_factor,
-            )
-            if moved:
-                released += len(moved)
-                self.stats.storage_to_lane += len(moved)
-                ids = ",".join(f"#{f.id}" for f in moved)
+        for spec in self.specs:
+            while self.lanes.lane_room(spec, self.cap_factor) > 0:
+                candidates = [
+                    f for f in self.lanes.storage
+                    if f.spec == spec and fish_matches_lane_demand(self.lanes, f)
+                ]
+                if not candidates:
+                    break
+                candidates.sort(key=self._fish_system_dwell, reverse=True)
+                moved = self.lanes.transfer_storage_to_lane(
+                    spec, [candidates[0]], self.tick, self.tracker, self.cap_factor
+                )
+                if not moved:
+                    break
+                released += 1
+                self.stats.storage_to_lane += 1
+                fish = moved[0]
+                ranges = lane_demand_weight_ranges(self.lanes, spec)
                 self._log_flow(
-                    f"[{ids}] 暂存箱 → {spec.upper()}料道 "
-                    f"区间{ranges} ({demand.get('reason', '')}) | "
+                    f"#{fish.id} 暂存箱 → {spec.upper()}料道 "
+                    f"区间{ranges} (快超时优先) | "
                     f"{self._lane_status(spec)} | {self._storage_status()}"
                 )
+                self._try_pack_spec(spec)
         return released
+
+    def _fish_system_dwell(self, fish: Fish) -> int:
+        """鱼自首次入系统以来的累计停留步数（料道↔暂存流转不重置）。"""
+        trace = self.tracker.traces.get(fish.id)
+        if trace and trace.first_in_time is not None:
+            return self.tick - trace.first_in_time
+        return self.tick - fish.enter_time
 
     def _monitor_storage(self) -> None:
         """
@@ -1745,120 +1465,109 @@ class SchedulerEngine:
             dwell: 在暂存箱内的等待 tick 数
             trace/first_in: 鱼的全局追踪记录，用于 system_dwell_s
 
-        每步最多处理 1 条，避免单 tick 批量淘汰。
+        同一步内处理所有已超时的暂存鱼，避免积压后跨步误增超时。
+        超时判定用自首次入系统累计停留（first_in_time），防止料道→暂存反复重置计时。
         """
         if self.move_timeout <= 0 or not self.lanes.storage:
             return
-        fish = min(self.lanes.storage, key=lambda f: f.enter_time)
-        if self.tick - fish.enter_time < self.move_timeout:
-            return
-        self.lanes.remove_from_storage_ids({fish.id})
-        dwell = self.tick - fish.enter_time
-        trace = self.tracker.traces.get(fish.id)
-        first_in = trace.first_in_time if trace else None
-        self.tracker.mark_timeout_tail(
-            fish, self.tick, dwell, status="unmatched_storage_timeout"
-        )
-        self.stats.storage_timeout_tail += 1
-        self.stats.tail_count += 1
-        self.timeout_tail_log.append(
-            {
-                "tick": self.tick,
-                "fish_id": fish.id,
-                "weight": fish.weight,
-                "spec": fish.spec,
-                "bucket": fish.bucket,
-                "first_in_time": first_in,
-                "lane_wait_s": dwell,
-                "system_dwell_s": (
-                    self.tick - first_in if first_in is not None else None
-                ),
-                "threshold_s": self.move_timeout,
-                "rounds": fish.rounds,
-                "batch_seed": self.seed,
-                "source": "storage",
-            }
-        )
-        unit = self._tick_unit()
-        system_dwell = self.tick - first_in if first_in is not None else None
-        self._log(
-            "超时",
-            f"暂存 #{fish.id} {fish.spec.upper()}-{BUCKET_LABEL[fish.bucket]} "
-            f"{fish.weight}g 等待 {dwell}{unit} ≥ 阈值{self.move_timeout}{unit} → 尾料"
-            + (
-                f" | 系统停留 {system_dwell}{unit}"
-                if system_dwell is not None
-                else ""
+        while self.lanes.storage:
+            fish = max(self.lanes.storage, key=self._fish_system_dwell)
+            dwell = self._fish_system_dwell(fish)
+            if dwell < self.move_timeout:
+                break
+            self.lanes.remove_from_storage_ids({fish.id})
+            storage_dwell = self.tick - fish.enter_time
+            trace = self.tracker.traces.get(fish.id)
+            first_in = trace.first_in_time if trace else None
+            self.tracker.mark_timeout_tail(
+                fish, self.tick, storage_dwell, status="unmatched_storage_timeout"
             )
-            + f" | {self._storage_status()}",
-            force=True,
-        )
+            self.stats.storage_timeout_tail += 1
+            self.stats.tail_count += 1
+            self.timeout_tail_log.append(
+                {
+                    "tick": self.tick,
+                    "fish_id": fish.id,
+                    "weight": fish.weight,
+                    "spec": fish.spec,
+                    "bucket": fish.bucket,
+                    "first_in_time": first_in,
+                    "lane_wait_s": storage_dwell,
+                    "system_dwell_s": dwell,
+                    "threshold_s": self.move_timeout,
+                    "rounds": fish.rounds,
+                    "batch_seed": self.seed,
+                    "source": "storage",
+                }
+            )
+            unit = self._tick_unit()
+            self._log(
+                "超时",
+                f"暂存 #{fish.id} {fish.spec.upper()}-{BUCKET_LABEL[fish.bucket]} "
+                f"{fish.weight}g 系统停留 {dwell}{unit} ≥ 阈值{self.move_timeout}{unit} → 尾料"
+                + (
+                    f" | 本次暂存 {storage_dwell}{unit}"
+                    if storage_dwell != dwell
+                    else ""
+                )
+                + f" | {self._storage_status()}",
+                force=True,
+            )
+
+    def _enforce_timeouts(self) -> None:
+        """料道队首与暂存箱超时淘汰（入料前优先执行，减轻暂存积压）。"""
+        self._monitor_storage()
+        self._anti_block()
 
     def _anti_block(self) -> None:
-        """
-        料道防堵：队首鱼等待超过 move_timeout 则弹出并记为超时尾料。
-
-        变量:
-            lane: 当前检查的 (spec, bucket) 料道队列
-            dwell: 队首鱼担任队首的等待 tick 数（enter_time 在队首变更时重置）
-            fish: 被弹出的超时鱼
-
-        每步只处理第一条超时队首（return 退出），避免同 tick 大量淘汰。
-        注：超容不再弹队头到回流队列，改由入料侧 _route_spec_intake 路由暂存箱。
-        """
+        """三合一料道队首超时淘汰。"""
+        if self.move_timeout <= 0:
+            return
         for spec in self.specs:
-            for bucket in BUCKETS:
-                lane = self.lanes.queues[spec][bucket]
-                if not lane:
-                    continue
-                if (
-                    self.move_timeout > 0
-                    and self.tick - lane[0].enter_time >= self.move_timeout
-                ):
-                    dwell = self.tick - lane[0].enter_time
-                    trace = self.tracker.traces.get(lane[0].id)
-                    first_in = trace.first_in_time if trace else None
-                    fish = self.lanes.discard_head_timeout(
-                        spec, bucket, self.tick, dwell, self.tracker
+            lane = self.lanes.lane[spec]
+            while lane and self._fish_system_dwell(lane[0]) >= self.move_timeout:
+                head = lane[0]
+                head_dwell = self.tick - head.enter_time
+                system_dwell = self._fish_system_dwell(head)
+                trace = self.tracker.traces.get(head.id)
+                first_in = trace.first_in_time if trace else None
+                fish = self.lanes.discard_head_timeout(
+                    spec, self.tick, head_dwell, self.tracker
+                )
+                if not fish:
+                    break
+                self.stats.timeout_tail += 1
+                self.stats.tail_count += 1
+                self.timeout_tail_log.append(
+                    {
+                        "tick": self.tick,
+                        "fish_id": fish.id,
+                        "weight": fish.weight,
+                        "spec": spec,
+                        "bucket": fish.bucket,
+                        "first_in_time": first_in,
+                        "lane_wait_s": head_dwell,
+                        "system_dwell_s": system_dwell,
+                        "threshold_s": self.move_timeout,
+                        "rounds": fish.rounds,
+                        "batch_seed": self.seed,
+                    }
+                )
+                unit = self._tick_unit()
+                self._log(
+                    "超时",
+                    f"料道 #{fish.id} {spec.upper()}-{BUCKET_LABEL[fish.bucket]} "
+                    f"{fish.weight}g 系统停留 {system_dwell}{unit} ≥ "
+                    f"阈值{self.move_timeout}{unit} → 尾料 R{fish.rounds}"
+                    + (
+                        f" | 队首 {head_dwell}{unit}"
+                        if head_dwell != system_dwell
+                        else ""
                     )
-                    if fish:
-                        self.stats.timeout_tail += 1
-                        self.stats.tail_count += 1
-                        self.timeout_tail_log.append(
-                            {
-                                "tick": self.tick,
-                                "fish_id": fish.id,
-                                "weight": fish.weight,
-                                "spec": spec,
-                                "bucket": bucket,
-                                "first_in_time": first_in,
-                                "lane_wait_s": dwell,
-                                "system_dwell_s": (
-                                    self.tick - first_in if first_in is not None else None
-                                ),
-                                "threshold_s": self.move_timeout,
-                                "rounds": fish.rounds,
-                                "batch_seed": self.seed,
-                            }
-                        )
-                        unit = self._tick_unit()
-                        system_dwell = (
-                            self.tick - first_in if first_in is not None else None
-                        )
-                        self._log(
-                            "超时",
-                            f"料道 #{fish.id} {spec.upper()}-{BUCKET_LABEL[bucket]} "
-                            f"{fish.weight}g 队首等待 {dwell}{unit} ≥ "
-                            f"阈值{self.move_timeout}{unit} → 尾料 R{fish.rounds}"
-                            + (
-                                f" | 系统停留 {system_dwell}{unit}"
-                                if system_dwell is not None
-                                else ""
-                            )
-                            + f" | {self._timeout_status()}",
-                            force=True,
-                        )
-                    return
+                    + f" | {self._timeout_status()}",
+                    force=True,
+                )
+                lane = self.lanes.lane[spec]
 
     def _save_cartons_csv(self, path: Path) -> None:
         """导出成盒明细 CSV（cartons_seed_{seed}.csv）。"""
@@ -2085,6 +1794,7 @@ class SchedulerEngine:
 
         # ── 2. 推进时钟，取下一条批次记录 ──
         self._advance_tick(1)
+        self._enforce_timeouts()            # 入料前先清超时队首，减轻料道/暂存拥堵
         record = self.batch[self._cursor]   # 当前原始批次记录
         self._cursor += 1                   # 游标前移，下次处理下一条
         is_outside = record.outside or record.spec is None  # 是否规格外/超规
@@ -2121,9 +1831,8 @@ class SchedulerEngine:
         # ── 7. 入料后处理：再封箱、暂存超时、料道防堵 ──
         self._release_storage_by_demands()
         self._try_pack_all()
-        self._monitor_storage()
+        self._enforce_timeouts()
         self._note_storage_peak()
-        self._anti_block()
         self._warn_timeout_pressure()
 
         # ── 8. 周期性进度日志 ──
@@ -2156,17 +1865,16 @@ class SchedulerEngine:
             self._process_reflow_intake()
             self._release_storage_by_demands()
             self._try_pack_all()
-            self._monitor_storage()
+            if self.timeout_in_finish:
+                self._enforce_timeouts()
             self._note_storage_peak()
             if self.stats.cartons == before and not self.lanes.reflow and not self.lanes.storage:
                 break
-            self._anti_block()
 
         for spec in self.specs:
-            for bucket in BUCKETS:
-                for fish in self.lanes.queues[spec][bucket]:
-                    self.tracker.mark_unmatched(fish, "unmatched_tail", tick=self.tick)
-                    self.stats.tail_count += 1
+            for fish in self.lanes.lane[spec]:
+                self.tracker.mark_unmatched(fish, "unmatched_tail", tick=self.tick)
+                self.stats.tail_count += 1
         if self.lanes.storage:
             self.stats.storage_batch_tail += len(self.lanes.storage)
         for fish in list(self.lanes.storage):
@@ -2209,126 +1917,132 @@ class SchedulerEngine:
             rounds_dist[t.rounds] = rounds_dist.get(t.rounds, 0) + 1
         report_path = _root / "data" / f"run_report_seed_{self.seed}.csv"
 
-        print("\n" + "=" * 60)
-        print("智能分拣汇总")
-        print("=" * 60)
-        print(f"  批次种子     : {self.seed}")
+        self._emit("\n" + "=" * 60)
+        self._emit("智能分拣汇总")
+        self._emit("=" * 60)
+        self._emit(f"  批次种子     : {self.seed}")
         if self.exclude_outside_stats:
-            print(
+            self._emit(
                 f"  入料总数     : {self.stats.input_count} "
                 f"(规格内，规格外 {self.stats.outside_count} 条不计)"
             )
         else:
-            print(f"  入料总数     : {self.stats.input_count}")
-        print(
+            self._emit(f"  入料总数     : {self.stats.input_count}")
+        self._emit(
             f"  入料总重     : "
             f"{_fmt_weight_g(self.stats.input_weight)}"
         )
         if self.stop_mode == STOP_MODE_WEIGHT:
-            print(f"  结束条件     : 总重 ≥ {self.stop_weight_g / 1_000_000:.3f}t")
+            self._emit(f"  结束条件     : 总重 ≥ {self.stop_weight_g / 1_000_000:.3f}t")
         else:
-            print(f"  结束条件     : 条数 {self.stop_count}")
+            self._emit(f"  结束条件     : 条数 {self.stop_count}")
 
-        print("-" * 60)
-        print("【配箱】")
-        print(f"  箱数         : {m['cartons']}")
-        print(f"  鱼数         : {m['packed_fish']}")
+        self._emit("-" * 60)
+        self._emit("【配箱】")
+        self._emit(f"  箱数         : {m['cartons']}")
+        self._emit(f"  鱼数         : {m['packed_fish']}")
 
-        print("【暂存箱峰值】")
-        print(
+        self._emit("【暂存箱峰值】")
+        self._emit(
             f"  峰值/上限    : {m['storage_peak']} / {m['storage_capacity']} 条"
         )
-        print(f"  峰值使用率   : {m['storage_peak_pct']}%")
+        self._emit(f"  峰值使用率   : {m['storage_peak_pct']}%")
 
-        print("【超时尾料】")
-        print(
+        self._emit("【超时尾料】")
+        self._emit(
             f"  料道         : {m['timeout_lane_count']} 条, "
             f"{_fmt_weight_g(m['timeout_lane_weight_g'])}"
         )
-        print(
+        self._emit(
             f"  暂存箱       : {m['timeout_storage_count']} 条, "
             f"{_fmt_weight_g(m['timeout_storage_weight_g'])}"
         )
-        print(
+        self._emit(
             f"  合计         : {m['timeout_total_count']} 条, "
             f"{_fmt_weight_g(m['timeout_total_weight_g'])}"
         )
 
-        print("【回流 / 暂存箱满】")
-        print(
+        self._emit("【回流 / 暂存箱满】")
+        self._emit(
             f"  批末回流未配盒: {m['reflow_batch_count']} 条, "
             f"{_fmt_weight_g(m['reflow_batch_weight_g'])}"
         )
-        print(
+        self._emit(
             f"  暂存箱爆满尾料: {m['storage_full_count']} 条, "
             f"{_fmt_weight_g(m['storage_full_weight_g'])}"
         )
 
-        print("【批末未配盒】（扫尾时料道/暂存/回流队列剩余）")
-        print(
+        self._emit("【批末未配盒】（扫尾时料道/暂存/回流队列剩余）")
+        self._emit(
             f"  料道         : {m['tail_lane_count']} 条, "
             f"{_fmt_weight_g(m['tail_lane_weight_g'])}"
         )
-        print(
+        self._emit(
             f"  暂存箱       : {m['tail_storage_count']} 条, "
             f"{_fmt_weight_g(m['tail_storage_weight_g'])}"
         )
-        print(
+        self._emit(
             f"  回流队列     : {m['tail_reflow_count']} 条, "
             f"{_fmt_weight_g(m['tail_reflow_weight_g'])}"
         )
-        print(
+        self._emit(
             f"  合计         : {m['tail_batch_count']} 条, "
             f"{_fmt_weight_g(m['tail_batch_weight_g'])}"
         )
 
-        print("-" * 60)
+        self._emit("-" * 60)
         if not self.exclude_outside_stats:
-            print(f"  规格外       : {self.stats.outside_count}")
-        print(f"  未匹配/尾料  : {self.stats.unmatched_count} (含超时/规格外/箱满等全部尾料)")
-        print(f"  运行时长     : {self.tick}s")
+            self._emit(f"  规格外       : {self.stats.outside_count}")
+        self._emit(f"  未匹配/尾料  : {self.stats.unmatched_count} (含超时/规格外/箱满等全部尾料)")
+        self._emit(f"  运行时长     : {self.tick}s")
         if self.cartons:
             weights = [c.weight for c in self.cartons]
-            print(f"  盒重范围     : {min(weights)}g ~ {max(weights)}g")
-            print(f"  盒重均值     : {sum(weights) / len(weights):.0f}g")
-        print("  轮数分布     :", dict(sorted(rounds_dist.items())))
-        print(f"  明细报告     : {report_path}")
-        print("=" * 60)
+            self._emit(f"  盒重范围     : {min(weights)}g ~ {max(weights)}g")
+            self._emit(f"  盒重均值     : {sum(weights) / len(weights):.0f}g")
+        self._emit(f"  轮数分布     : {dict(sorted(rounds_dist.items()))}")
+        self._emit(f"  明细报告     : {report_path}")
+        self._emit("=" * 60)
 
 
 
-    def run(self, realtime: bool = True) -> None:
-        """循环 process_one 直至批次耗尽，再 finish_batch 并打印报告。"""
-        print("智能分拣引擎启动")
-        print(f"  批次       : fish_seed_{self.seed}.csv ({self.total_fish} 条)")
-        print(f"  分拣规格   : {len(self.specs)} 个 ({', '.join(s.upper() for s in self.specs[:3])} …)")
-        print(f"  模块批次   : A/B/C 共 {len(MODULE_SPECS)} 组")
-        print(f"  盒重目标   : {TARGET_MIN}-{TARGET_MAX}g")
-        clock_label = (
-            "进料步进"
-            if self.timeout_clock == TIMEOUT_CLOCK_INTAKE
-            else "真实时间"
-        )
-        unit = "步" if self.timeout_clock == TIMEOUT_CLOCK_INTAKE else "s"
-        print(
-            f"  移动超时   : {self.move_timeout}{unit} "
-            f"({clock_label}计时，超出则直接记为尾料，不进回流)"
-        )
-        print(f"  入料间隔   : {self.interval}s")
-        print(f"  暂存容量   : {self.lanes.storage_capacity} 条")
-        if self.verbose:
-            print("  详细日志   : 开启 [流向] 每条入料/封箱/暂存出入")
-            print("               [超时预警] 等待≥80%阈值 | [超时]/[暂存峰值] 始终输出")
-        else:
-            print("  详细日志   : 关闭（加 -v 查看每条流向；进度/超时/峰值仍输出）")
-        print("-" * 60)
+    def run(self, *, realtime: bool = True, full_report: bool = False) -> None:
+        """循环 process_one 直至批次耗尽，再 finish_batch 并输出结果。"""
+        self._open_run_log()
+        try:
+            self.print_config()
+            if not self.quiet:
+                mode = "详细流向" if self.verbose else "标准(进度/超时/峰值)"
+                self._emit(
+                    f"日志模式: {mode} | 入料间隔: {self.interval}s"
+                    f"{' (fast跳过)' if not realtime else ''}"
+                )
+                self._emit("-" * 64)
 
-        while self.process_one():
-            if realtime:
-                time.sleep(self.interval)
+            t0 = time.perf_counter()
+            while self.process_one():
+                if realtime:
+                    time.sleep(self.interval)
 
-        self.finish_batch()
-        self.print_report()
+            self._enforce_timeouts()
+            self.finish_batch()
+            elapsed = time.perf_counter() - t0
+
+            if full_report:
+                self.print_report()
+                self._emit(f"  墙钟耗时     : {elapsed:.2f}s")
+            else:
+                self.print_quick_summary(elapsed)
+                if not self.quiet:
+                    self._emit(
+                        f"  (完整报告: 加 --report；明细 CSV: data/*_seed_{self.seed}.csv)"
+                    )
+            if self.log_file_path:
+                self._emit(
+                    f"  运行日志     : {self.log_file_path}",
+                    console=not self.quiet,
+                )
+        finally:
+            self._close_run_log()
 
 
 # ---------------------------------------------------------------------------
@@ -2337,14 +2051,18 @@ class SchedulerEngine:
 def run_demo(
     seed: int = DEFAULT_SEED,
     total: int = DEFAULT_TOTAL,
-    interval: float = 1.0,
+    interval: float = 0.0,
     move_timeout: int = DEFAULT_MOVE_TIMEOUT,
-    fast: bool = False,
+    fast: bool = True,
     verbose: bool = False,
+    quiet: bool | None = None,
+    full_report: bool = False,
     csv_path: Path | None = None,
+    **engine_kwargs,
 ) -> SchedulerEngine:
-    """作用：快捷封装：加载批次→创建引擎→跑完全程→返回引擎实例。
-    前端：无 Web UI；供脚本/测试一次性跑完，等价于 index「快速跑完」后端逻辑。"""
+    """加载批次 → 创建引擎 → 跑完全程 → 返回引擎实例。"""
+    if quiet is None:
+        quiet = fast
     records = load_or_generate_batch(seed=seed, total=total, csv_path=csv_path)
     engine = SchedulerEngine(
         batch_records=records,
@@ -2352,23 +2070,44 @@ def run_demo(
         interval=interval,
         move_timeout=move_timeout,
         verbose=verbose,
+        quiet=quiet,
+        stop_count=total,
+        **engine_kwargs,
     )
-    engine.run(realtime=not fast)
+    engine.run(realtime=not fast and interval > 0, full_report=full_report)
     return engine
 
 
 def main() -> None:
-    """作用：CLI 入口，解析命令行参数并启动引擎独立运行（不经过 web_server）。
-    前端：无；命令行 python src/Scheduler_Engine.py --seed 42 --fast。"""
-    parser = argparse.ArgumentParser(description="智能分拣引擎（25000 条种子批次）")
+    """CLI 入口。"""
+    parser = argparse.ArgumentParser(
+        description="智能分拣引擎（纯算版）",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+示例:
+  python Scheduler_EngineV1.py --fast -n 25000 --seed 42
+  python Scheduler_EngineV1.py --fast -n 1000 --specs 15p,20p,25p --move-timeout 180
+  python Scheduler_EngineV1.py -n 500 -v --report
+  python Scheduler_EngineV1.py --weight 10 --specs module-a --fast
+        """.strip(),
+    )
     parser.add_argument("--seed", type=int, default=DEFAULT_SEED, help="随机种子")
-    parser.add_argument("-n", "--total", type=int, default=DEFAULT_TOTAL, help="入料总条数")
-    parser.add_argument("-i", "--interval", type=float, default=1.0, help="每条间隔秒数")
+    parser.add_argument(
+        "--specs",
+        default=",".join(DEFAULT_ENABLED_SPECS),
+        help="启用规格，逗号分隔或 default",
+    )
+    parser.add_argument(
+        "--cap-factor",
+        type=int,
+        default=DEFAULT_CAP_FACTOR,
+        help="料道扩容 N：容量 = min(装箱尾数)+N",
+    )
     parser.add_argument(
         "--move-timeout",
         type=int,
         default=DEFAULT_MOVE_TIMEOUT,
-        help="料道移动超时阈值（步或秒，见 --timeout-clock）",
+        help="队首/暂存超时阈值（步或秒，见 --timeout-clock）",
     )
     parser.add_argument(
         "--timeout-clock",
@@ -2376,23 +2115,120 @@ def main() -> None:
         default=DEFAULT_TIMEOUT_CLOCK,
         help="超时计时：intake=每入料一步+1；real=真实系统秒",
     )
+    parser.add_argument(
+        "--exclude-outside-stats",
+        action="store_true",
+        help="规格外不计入入料/结束条件（批量测试用）",
+    )
+    parser.add_argument(
+        "--timeout-in-finish",
+        action="store_true",
+        help="批末扫尾阶段继续执行超时淘汰（默认关闭，剩余鱼标为批末尾料）",
+    )
+    parser.add_argument("-i", "--interval", type=float, default=0.0, help="每条间隔秒数")
     parser.add_argument("--csv", type=Path, default=None, help="指定种子 CSV 路径")
-    parser.add_argument("--fast", action="store_true", help="快速跑完（不等待）")
-    parser.add_argument("-v", "--verbose", action="store_true", help="打印每条鱼流向、封箱、暂存出入及超时预警")
-    parser.add_argument("--log-every", type=int, default=500, help="进度日志间隔")
+    parser.add_argument(
+        "--fast",
+        action="store_true",
+        # default=True,
+        help="快速模式：不等待、静默、单行结果（默认开启）",
+    )
+    parser.add_argument(
+        "--no-fast",
+        action="store_false",
+        dest="fast",
+        default="",
+        help="关闭快速模式（打印中途进度/超时/峰值）",
+    )
+    parser.add_argument(
+        "--report",
+        action="store_true",
+        help="跑完后打印完整汇总（默认仅单行结果）",
+    )
+    parser.add_argument(
+        "-v", "--verbose",
+        action="store_true",
+        default=True,
+        help="打印每条鱼流向、封箱、暂存出入及超时预警",
+    )
+    parser.add_argument(
+        "-q", "--quiet",
+        action="store_true",
+        default=None,
+        help="强制静默（不打印中途日志）",
+    )
+    parser.add_argument("--log-every", type=int, default=500, help="进度日志间隔（条）")
+    parser.add_argument(
+        "--log-file",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help="运行日志输出路径（默认 data/run_log_seed_{seed}_{时间}.log）",
+    )
+    parser.add_argument(
+        "--no-log-file",
+        action="store_true",
+        help="不写入运行日志文件",
+    )
+    stop_g = parser.add_mutually_exclusive_group()
+    stop_g.add_argument("-n", "--total", type=int, default=DEFAULT_TOTAL, help="按条数结束")
+    stop_g.add_argument(
+        "-w", "--weight",
+        type=float,
+        default=None,
+        help="按总重结束（吨）",
+    )
     args = parser.parse_args()
 
-    records = load_or_generate_batch(seed=args.seed, total=args.total, csv_path=args.csv)
+    enabled = normalize_enabled_specs(expand_spec_list(args.specs))
+    if args.weight is not None:
+        stop_mode = STOP_MODE_WEIGHT
+        stop_count = DEFAULT_TOTAL
+        stop_weight_g = int(args.weight * 1_000_000)
+        batch_total = batch_total_for_run(
+            stop_mode, stop_count, stop_weight_g, enabled_specs=enabled
+        )
+    else:
+        stop_mode = STOP_MODE_COUNT
+        stop_count = args.total
+        stop_weight_g = DEFAULT_STOP_WEIGHT_G
+        batch_total = stop_count
+
+    quiet = args.quiet if args.quiet is not None else args.fast
+    if args.no_log_file:
+        log_file: Path | None | bool = False
+    elif args.log_file is not None:
+        log_file = args.log_file
+    else:
+        log_file = True
+
+    records = load_or_generate_batch(
+        seed=args.seed,
+        total=batch_total,
+        csv_path=args.csv,
+        enabled_specs=enabled,
+        stop_mode=stop_mode,
+        stop_weight_g=stop_weight_g,
+    )
     engine = SchedulerEngine(
         batch_records=records,
         seed=args.seed,
         interval=args.interval,
+        specs=enabled,
         move_timeout=args.move_timeout,
+        cap_factor=max(1, args.cap_factor),
         verbose=args.verbose,
         log_every=args.log_every,
+        quiet=quiet,
+        stop_mode=stop_mode,
+        stop_count=stop_count,
+        stop_weight_g=stop_weight_g,
         timeout_clock=args.timeout_clock,
+        exclude_outside_stats=args.exclude_outside_stats,
+        timeout_in_finish=args.timeout_in_finish,
+        log_file=log_file,
     )
-    engine.run(realtime=not args.fast)
+    engine.run(realtime=not args.fast and args.interval > 0, full_report=args.report)
 
 
 if __name__ == "__main__":

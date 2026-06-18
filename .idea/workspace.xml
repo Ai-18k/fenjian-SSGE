@@ -6,7 +6,13 @@
   <component name="ChangeListManager">
     <list default="true" id="236c8e9a-740a-4589-b391-a79aed86e843" name="Changes" comment=" index.html 增加超容回流数据">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/fifo_monitor.html" beforeDir="false" afterPath="$PROJECT_DIR$/src/fifo_monitor.html" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/md/提示词.md" beforeDir="false" afterPath="$PROJECT_DIR$/md/提示词.md" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/样例/demo/Box.java" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/样例/demo/BoxConfig.java" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/样例/demo/Fish.java" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/样例/demo/ImprovedFishBoxing501.java" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/纯算/Scheduler_EngineV1.py" beforeDir="false" afterPath="$PROJECT_DIR$/纯算/Scheduler_EngineV1.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/纯算/Scheduler_EngineV1_算法流程说明.md" beforeDir="false" afterPath="$PROJECT_DIR$/纯算/Scheduler_EngineV1_算法流程说明.md" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -50,6 +56,7 @@
     "ASKED_ADD_EXTERNAL_FILES": "true",
     "DefaultHtmlFileTemplate": "HTML File",
     "Python.Scheduler_Engine.executor": "Debug",
+    "Python.Scheduler_EngineV1.executor": "Run",
     "Python.improved_fish_boxing_501.executor": "Run",
     "Python.web_server.executor": "Run",
     "Python.细分规则.executor": "Run",
@@ -57,7 +64,7 @@
     "Python.随机种子生成.executor": "Run",
     "RunOnceActivity.ShowReadmeOnStart": "true",
     "git-widget-placeholder": "main",
-    "last_opened_file_path": "E:/project/pythonproject/spider/aiqicha",
+    "last_opened_file_path": "E:/project/pythonproject/kaomam_project",
     "node.js.detected.package.eslint": "true",
     "node.js.detected.package.tslint": "true",
     "node.js.selected.package.eslint": "(autodetect)",
@@ -73,7 +80,7 @@
       <recent name="E:\project\pythonproject\kaomam_project\guoxuan样例" />
     </key>
   </component>
-  <component name="RunManager" selected="Python.web_server">
+  <component name="RunManager" selected="Python.Scheduler_EngineV1">
     <configuration name="细分规则" type="PythonConfigurationType" factoryName="Python" temporary="true" nameIsGenerated="true">
       <module name="kaomam_project" />
       <option name="ENV_FILES" value="" />
@@ -112,6 +119,29 @@
       <option name="ADD_SOURCE_ROOTS" value="true" />
       <EXTENSION ID="PythonCoverageRunConfigurationExtension" runner="coverage.py" />
       <option name="SCRIPT_NAME" value="$PROJECT_DIR$/src/Scheduler_Engine.py" />
+      <option name="PARAMETERS" value="" />
+      <option name="SHOW_COMMAND_LINE" value="false" />
+      <option name="EMULATE_TERMINAL" value="false" />
+      <option name="MODULE_MODE" value="false" />
+      <option name="REDIRECT_INPUT" value="false" />
+      <option name="INPUT_FILE" value="" />
+      <method v="2" />
+    </configuration>
+    <configuration name="Scheduler_EngineV1" type="PythonConfigurationType" factoryName="Python" temporary="true" nameIsGenerated="true">
+      <module name="kaomam_project" />
+      <option name="ENV_FILES" value="" />
+      <option name="INTERPRETER_OPTIONS" value="" />
+      <option name="PARENT_ENVS" value="true" />
+      <envs>
+        <env name="PYTHONUNBUFFERED" value="1" />
+      </envs>
+      <option name="SDK_HOME" value="" />
+      <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$/纯算" />
+      <option name="IS_MODULE_SDK" value="true" />
+      <option name="ADD_CONTENT_ROOTS" value="true" />
+      <option name="ADD_SOURCE_ROOTS" value="true" />
+      <EXTENSION ID="PythonCoverageRunConfigurationExtension" runner="coverage.py" />
+      <option name="SCRIPT_NAME" value="$PROJECT_DIR$/纯算/Scheduler_EngineV1.py" />
       <option name="PARAMETERS" value="" />
       <option name="SHOW_COMMAND_LINE" value="false" />
       <option name="EMULATE_TERMINAL" value="false" />
@@ -191,6 +221,7 @@
     </configuration>
     <recent_temporary>
       <list>
+        <item itemvalue="Python.Scheduler_EngineV1" />
         <item itemvalue="Python.web_server" />
         <item itemvalue="Python.Scheduler_Engine" />
         <item itemvalue="Python.细分规则" />
@@ -222,6 +253,7 @@
       <workItem from="1780888383857" duration="128000" />
       <workItem from="1780891075388" duration="1254000" />
       <workItem from="1780899357577" duration="334000" />
+      <workItem from="1781750340681" duration="11224000" />
     </task>
     <task id="LOCAL-00001" summary="初始状态">
       <option name="closed" value="true" />
@@ -380,5 +412,6 @@
     <SUITE FILE_PATH="coverage/kaomam_project$web_server.coverage" NAME="web_server Coverage Results" MODIFIED="1780540151153" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$/src" />
     <SUITE FILE_PATH="coverage/kaomam_project$.coverage" NAME="细分规则 Coverage Results" MODIFIED="1780370124179" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$/plan" />
     <SUITE FILE_PATH="coverage/kaomam_project$Scheduler_Engine.coverage" NAME="Scheduler_Engine Coverage Results" MODIFIED="1780482422574" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$/src" />
+    <SUITE FILE_PATH="coverage/kaomam_project$Scheduler_EngineV1.coverage" NAME="Scheduler_EngineV1 Coverage Results" MODIFIED="1781764707949" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$/纯算" />
   </component>
 </project>

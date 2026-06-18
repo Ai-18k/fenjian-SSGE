@@ -438,3 +438,16 @@ matches = weight 落在 _intake_weight_ranges(spec) 内
 | `plan/深度搜索.py` | DFS 配盒 |
 | `plan/细分规则.py` | 小/中/大分区划分 |
 | `batch_runner.py` | 纯算法批量测试入口 |
+
+
+
+
+"""
+python Scheduler_EngineV1.py --fast --seed 42 --specs 15p,20p,25p,30p,35p,40p -w 10 --move-timeout 180 --log-every 500 -v --exclude-outside-stats
+
+python Scheduler_EngineV1.py --fast --seed 42 --specs 45p,50p,60p,70p,80p,90p -w 10 --move-timeout 300 -v --exclude-outside-stats
+
+python Scheduler_EngineV1.py --fast --seed 42 --specs 100p,110p,120p,130p,140p,150p -w 10 --move-timeout 300 -v
+
+"""
+

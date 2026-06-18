@@ -1,0 +1,498 @@
+E:\project\pythonproject\kaomam_project\样例\demo>javac ImprovedFishBoxing501.java -d target -encoding utf-8
+ImprovedFishBoxing501.java:3: 错误: 程序包com.alibaba.fastjson2不存在
+import com.alibaba.fastjson2.JSONObject;
+                            ^
+ImprovedFishBoxing501.java:4: 错误: 找不到符号
+import demo.Box;
+           ^
+  符号:   类 Box
+  位置: 程序包 demo
+ImprovedFishBoxing501.java:5: 错误: 找不到符号
+import demo.BoxConfig;
+           ^
+  符号:   类 BoxConfig
+  位置: 程序包 demo
+ImprovedFishBoxing501.java:6: 错误: 找不到符号
+import demo.Fish;
+           ^
+  符号:   类 Fish
+  位置: 程序包 demo
+ImprovedFishBoxing501.java:7: 错误: 程序包lombok.extern.slf4j不存在
+import lombok.extern.slf4j.Slf4j;
+                          ^
+ImprovedFishBoxing501.java:20: 错误: 找不到符号
+@Slf4j
+ ^
+  符号: 类 Slf4j
+ImprovedFishBoxing501.java:36: 错误: 找不到符号
+    private static Map<Integer,Fish> outTimeFish_180 = new HashMap<>();
+                               ^
+  符号:   类 Fish
+  位置: 类 ImprovedFishBoxing501
+ImprovedFishBoxing501.java:37: 错误: 找不到符号
+    private static Map<Integer,Fish> outTimeFish_240 = new HashMap<>();
+                               ^
+  符号:   类 Fish
+  位置: 类 ImprovedFishBoxing501
+ImprovedFishBoxing501.java:38: 错误: 找不到符号
+    private static Map<Integer,Fish> outTimeFish_300 = new HashMap<>();
+                               ^
+  符号:   类 Fish
+  位置: 类 ImprovedFishBoxing501
+ImprovedFishBoxing501.java:39: 错误: 找不到符号
+    private static Map<Integer,Fish> outTimeFish_420 = new HashMap<>();
+                               ^
+  符号:   类 Fish
+  位置: 类 ImprovedFishBoxing501
+ImprovedFishBoxing501.java:40: 错误: 找不到符号
+    private static Map<Integer,Fish> outTimeFish_540 = new HashMap<>();
+                               ^
+  符号:   类 Fish
+  位置: 类 ImprovedFishBoxing501
+ImprovedFishBoxing501.java:41: 错误: 找不到符号
+    private static Map<Integer,Fish> outTimeFish_600 = new HashMap<>();
+                               ^
+  符号:   类 Fish
+  位置: 类 ImprovedFishBoxing501
+ImprovedFishBoxing501.java:42: 错误: 找不到符号
+    private static Map<Integer,Fish> outTimeFish_660 = new HashMap<>();
+                               ^
+  符号:   类 Fish
+  位置: 类 ImprovedFishBoxing501
+ImprovedFishBoxing501.java:56: 错误: 找不到符号
+    private static final Map<String, List<Fish>> bufferMap = new LinkedHashMap<>();
+                                          ^
+  符号:   类 Fish
+  位置: 类 ImprovedFishBoxing501
+ImprovedFishBoxing501.java:61: 错误: 找不到符号
+    private static List<Fish> reflowFish = new ArrayList<>();
+                        ^
+  符号:   类 Fish
+  位置: 类 ImprovedFishBoxing501
+ImprovedFishBoxing501.java:65: 错误: 找不到符号
+    private static List<Fish>[][] cacheBoxes;
+                        ^
+  符号:   类 Fish
+  位置: 类 ImprovedFishBoxing501
+ImprovedFishBoxing501.java:67: 错误: 找不到符号
+    private static BoxConfig[] configs; // 6个规格配置
+                   ^
+  符号:   类 BoxConfig
+  位置: 类 ImprovedFishBoxing501
+ImprovedFishBoxing501.java:79: 错误: 找不到符号
+    private static final List<Box> boxList = new ArrayList<>();
+                              ^
+  符号:   类 Box
+  位置: 类 ImprovedFishBoxing501
+ImprovedFishBoxing501.java:80: 错误: 找不到符号
+    private static final List<Box> failBoxList = new ArrayList<>();
+                              ^
+  符号:   类 Box
+  位置: 类 ImprovedFishBoxing501
+ImprovedFishBoxing501.java:322: 错误: 找不到符号
+    public static Fish generateRandomFish(int id) {
+                  ^
+  符号:   类 Fish
+  位置: 类 ImprovedFishBoxing501
+ImprovedFishBoxing501.java:334: 错误: 找不到符号
+    private static void dealwithOutTime(Fish oldFish, Fish newFish){
+                                        ^
+  符号:   类 Fish
+  位置: 类 ImprovedFishBoxing501
+ImprovedFishBoxing501.java:334: 错误: 找不到符号
+    private static void dealwithOutTime(Fish oldFish, Fish newFish){
+                                                      ^
+  符号:   类 Fish
+  位置: 类 ImprovedFishBoxing501
+ImprovedFishBoxing501.java:343: 错误: 找不到符号
+    private static void outTimmFishMethod(Fish newFish) {
+                                          ^
+  符号:   类 Fish
+  位置: 类 ImprovedFishBoxing501
+ImprovedFishBoxing501.java:414: 错误: 找不到符号
+    private static void processNewFish(Fish fish) {
+                                       ^
+  符号:   类 Fish
+  位置: 类 ImprovedFishBoxing501
+ImprovedFishBoxing501.java:459: 错误: 找不到符号
+    private static boolean tryDirectPacking(int specIdx, Fish fish) {
+                                                         ^
+  符号:   类 Fish
+  位置: 类 ImprovedFishBoxing501
+ImprovedFishBoxing501.java:542: 错误: 找不到符号
+    private static boolean tryPlaceInCacheBox(int specIdx, Fish fish) {
+                                                           ^
+  符号:   类 Fish
+  位置: 类 ImprovedFishBoxing501
+ImprovedFishBoxing501.java:969: 错误: 找不到符号
+    private static void completeBox(int specIdx, int boxIdx, List<Fish> usedFish) {
+                                                                  ^
+  符号:   类 Fish
+  位置: 类 ImprovedFishBoxing501
+ImprovedFishBoxing501.java:1025: 错误: 找不到符号
+    private static void addToBuffer(Fish fish) {
+                                    ^
+  符号:   类 Fish
+  位置: 类 ImprovedFishBoxing501
+ImprovedFishBoxing501.java:1030: 错误: 找不到符号
+    private static void removeFromBuffer(Fish f) {
+                                         ^
+  符号:   类 Fish
+  位置: 类 ImprovedFishBoxing501
+ImprovedFishBoxing501.java:1041: 错误: 找不到符号
+    private static Fish evictOldest() {
+                   ^
+  符号:   类 Fish
+  位置: 类 ImprovedFishBoxing501
+ImprovedFishBoxing501.java:1167: 错误: 找不到符号
+    private static BoxConfig getSpec(int weight) {
+                   ^
+  符号:   类 BoxConfig
+  位置: 类 ImprovedFishBoxing501
+ImprovedFishBoxing501.java:1296: 错误: 找不到符号
+    private static String getBoxInfo(Box box) {
+                                     ^
+  符号:   类 Box
+  位置: 类 ImprovedFishBoxing501
+ImprovedFishBoxing501.java:1317: 错误: 找不到符号
+    private static Map<String, BoxConfig> getBoxConfigMap() {
+                               ^
+  符号:   类 BoxConfig
+  位置: 类 ImprovedFishBoxing501
+ImprovedFishBoxing501.java:834: 错误: 找不到符号
+        final List<List<Fish>> fishByWeight = new ArrayList<>(); // 每个重量对应的鱼列表（FIFO）
+                        ^
+  符号:   类 Fish
+  位置: 类 FreqTable
+ImprovedFishBoxing501.java:836: 错误: 找不到符号
+        FreqTable(List<Fish> fishList) {
+                       ^
+  符号:   类 Fish
+  位置: 类 FreqTable
+ImprovedFishBoxing501.java:863: 错误: 找不到符号
+        void remove(Fish f) {
+                    ^
+  符号:   类 Fish
+  位置: 类 FreqTable
+ImprovedFishBoxing501.java:882: 错误: 找不到符号
+        List<Fish> findCombination(int k, int low, int high) {
+             ^
+  符号:   类 Fish
+  位置: 类 FreqTable
+ImprovedFishBoxing501.java:913: 错误: 找不到符号
+        private boolean dfs(int idx, int remain, int low, int high, int curSum, List<Fish> out) {
+                                                                                     ^
+  符号:   类 Fish
+  位置: 类 FreqTable
+ImprovedFishBoxing501.java:99: 错误: 找不到符号
+        Map<String, BoxConfig> map = getBoxConfigMap();
+                    ^
+  符号:   类 BoxConfig
+  位置: 类 ImprovedFishBoxing501
+ImprovedFishBoxing501.java:100: 错误: 找不到符号
+        configs = new BoxConfig[]{
+                      ^
+  符号:   类 BoxConfig
+  位置: 类 ImprovedFishBoxing501
+ImprovedFishBoxing501.java:196: 错误: 找不到符号
+            log.info("===============================测试{}批次开始：{}===============================", size, uuid);
+            ^
+  符号:   变量 log
+  位置: 类 ImprovedFishBoxing501
+ImprovedFishBoxing501.java:204: 错误: 找不到符号
+            log.info("===============================第{}次计算结束，耗时：{}秒===============================",
+            ^
+  符号:   变量 log
+  位置: 类 ImprovedFishBoxing501
+ImprovedFishBoxing501.java:210: 错误: 找不到符号
+                Box info = boxList.get(i);
+                ^
+  符号:   类 Box
+  位置: 类 ImprovedFishBoxing501
+ImprovedFishBoxing501.java:211: 错误: 找不到符号
+                log.info("  箱{}：规格={}，条数={}，总重={}g，鱼详情={}",
+                ^
+  符号:   变量 log
+  位置: 类 ImprovedFishBoxing501
+ImprovedFishBoxing501.java:215: 错误: 找不到符号
+                log.info("  ... 中间省略 {} 箱 ...", boxList.size() - 25);
+                ^
+  符号:   变量 log
+  位置: 类 ImprovedFishBoxing501
+ImprovedFishBoxing501.java:217: 错误: 找不到符号
+                    Box info = boxList.get(i);
+                    ^
+  符号:   类 Box
+  位置: 类 ImprovedFishBoxing501
+ImprovedFishBoxing501.java:218: 错误: 找不到符号
+                    log.info("  箱{}：规格={}，条数={}，总重={}g，鱼详情={}",
+                    ^
+  符号:   变量 log
+  位置: 类 ImprovedFishBoxing501
+ImprovedFishBoxing501.java:222: 错误: 找不到符号
+            log.info("===============================各规格暂存箱余量===============================");
+            ^
+  符号:   变量 log
+  位置: 类 ImprovedFishBoxing501
+ImprovedFishBoxing501.java:229: 错误: 找不到符号
+                    List<Fish> cacheBox = cacheBoxes[i][j];
+                         ^
+  符号:   类 Fish
+  位置: 类 ImprovedFishBoxing501
+ImprovedFishBoxing501.java:230: 错误: 找不到符号
+                    remainWeight.addAndGet(cacheBox.stream().mapToInt(Fish::getWeight).sum());
+                                                                      ^
+  符号:   变量 Fish
+  位置: 类 ImprovedFishBoxing501
+ImprovedFishBoxing501.java:232: 错误: 找不到符号
+                    log.info("  规格[{}]：阈值={}条，暂存箱总条数={}，总重={}g",
+                    ^
+  符号:   变量 log
+  位置: 类 ImprovedFishBoxing501
+ImprovedFishBoxing501.java:236: 错误: 找不到符号
+            log.info("===============================缓冲池各规格详情===============================");
+            ^
+  符号:   变量 log
+  位置: 类 ImprovedFishBoxing501
+ImprovedFishBoxing501.java:237: 错误: 找不到符号
+            for (Map.Entry<String, List<Fish>> entry : bufferMap.entrySet()) {
+                                        ^
+  符号:   类 Fish
+  位置: 类 ImprovedFishBoxing501
+ImprovedFishBoxing501.java:239: 错误: 找不到符号
+                for (Fish fish : entry.getValue()) {
+                     ^
+  符号:   类 Fish
+  位置: 类 ImprovedFishBoxing501
+ImprovedFishBoxing501.java:242: 错误: 找不到符号
+                log.info("  规格{}：缓冲池{}条", entry.getKey(), entry.getValue().size());
+                ^
+  符号:   变量 log
+  位置: 类 ImprovedFishBoxing501
+ImprovedFishBoxing501.java:243: 错误: 找不到符号
+                log.info(reflowStr.toString());
+                ^
+  符号:   变量 log
+  位置: 类 ImprovedFishBoxing501
+ImprovedFishBoxing501.java:245: 错误: 找不到符号
+            log.info("===============================回流转存鱼详情===============================");
+            ^
+  符号:   变量 log
+  位置: 类 ImprovedFishBoxing501
+ImprovedFishBoxing501.java:247: 错误: 找不到符号
+            for (Fish fish : reflowFish) {
+                 ^
+  符号:   类 Fish
+  位置: 类 ImprovedFishBoxing501
+ImprovedFishBoxing501.java:250: 错误: 找不到符号
+            log.info(reflowStr.toString());
+            ^
+  符号:   变量 log
+  位置: 类 ImprovedFishBoxing501
+ImprovedFishBoxing501.java:251: 错误: 找不到符号
+            log.info("===============================【统计信息】===============================");
+            ^
+  符号:   变量 log
+  位置: 类 ImprovedFishBoxing501
+ImprovedFishBoxing501.java:252: 错误: 找不到符号
+            log.info("  总鱼数量：{}", FISH_SIZE);
+            ^
+  符号:   变量 log
+  位置: 类 ImprovedFishBoxing501
+ImprovedFishBoxing501.java:253: 错误: 找不到符号
+            log.info("  总鱼重量：{}g/ {} kg / {}t", totalFishWeight, totalFishWeight / 1000.0, totalFishWeight / 1000000.0);
+            ^
+  符号:   变量 log
+  位置: 类 ImprovedFishBoxing501
+ImprovedFishBoxing501.java:254: 错误: 找不到符号
+            log.info("  已装箱鱼数量：{}", BOXED_FISH_COUNT);
+            ^
+  符号:   变量 log
+  位置: 类 ImprovedFishBoxing501
+ImprovedFishBoxing501.java:256: 错误: 找不到符号
+            log.info("  装箱完成率：{}%", compelateRate);
+            ^
+  符号:   变量 log
+  位置: 类 ImprovedFishBoxing501
+ImprovedFishBoxing501.java:257: 错误: 找不到符号
+            log.info("  装箱完成箱数：{}", boxList.size());
+            ^
+  符号:   变量 log
+  位置: 类 ImprovedFishBoxing501
+ImprovedFishBoxing501.java:258: 错误: 找不到符号
+            log.info("  剩余暂存箱数：{}", totalInBoxes);
+            ^
+  符号:   变量 log
+  位置: 类 ImprovedFishBoxing501
+ImprovedFishBoxing501.java:259: 错误: 找不到符号
+            log.info("  失败暂存箱数：{}", failBoxList.size());
+            ^
+  符号:   变量 log
+  位置: 类 ImprovedFishBoxing501
+ImprovedFishBoxing501.java:260: 错误: 找不到符号
+            log.info("  回流转存数量：{}", reflowFish.size());
+            ^
+  符号:   变量 log
+  位置: 类 ImprovedFishBoxing501
+ImprovedFishBoxing501.java:262: 错误: 找不到符号
+            JSONObject bufferJson = new JSONObject();
+            ^
+  符号:   类 JSONObject
+  位置: 类 ImprovedFishBoxing501
+ImprovedFishBoxing501.java:262: 错误: 找不到符号
+            JSONObject bufferJson = new JSONObject();
+                                        ^
+  符号:   类 JSONObject
+  位置: 类 ImprovedFishBoxing501
+ImprovedFishBoxing501.java:265: 错误: 找不到符号
+                remainWeight.addAndGet(v.stream().mapToInt(Fish::getWeight).sum());
+                                                           ^
+  符号:   变量 Fish
+  位置: 类 ImprovedFishBoxing501
+ImprovedFishBoxing501.java:266: 错误: 找不到符号
+                bufferJson.put(k,v.stream().map(Fish::getPrintStr).toList());
+                                                ^
+  符号:   变量 Fish
+  位置: 类 ImprovedFishBoxing501
+ImprovedFishBoxing501.java:268: 错误: 找不到符号
+            log.info("  缓冲池剩余鱼数量：{}", totalBuffered);
+            ^
+  符号:   变量 log
+  位置: 类 ImprovedFishBoxing501
+ImprovedFishBoxing501.java:269: 错误: 找不到符号
+            log.info("  缓冲池历史最大数量：{}", MAX_BUFFER_SIZE);
+            ^
+  符号:   变量 log
+  位置: 类 ImprovedFishBoxing501
+ImprovedFishBoxing501.java:271: 错误: 找不到符号
+            for (Fish fish : reflowFish) {
+                 ^
+  符号:   类 Fish
+  位置: 类 ImprovedFishBoxing501
+ImprovedFishBoxing501.java:275: 错误: 找不到符号
+            log.info("剩余重量：{}kg",divide);
+            ^
+  符号:   变量 log
+  位置: 类 ImprovedFishBoxing501
+ImprovedFishBoxing501.java:277: 错误: 找不到符号
+            log.info("剩余率：{}%，成功率：{}%", percent, BigDecimal.valueOf(100).subtract(percent));
+            ^
+  符号:   变量 log
+  位置: 类 ImprovedFishBoxing501
+ImprovedFishBoxing501.java:278: 错误: 找不到符号
+            log.info("  结束原因：{}", stopReason);
+            ^
+  符号:   变量 log
+  位置: 类 ImprovedFishBoxing501
+ImprovedFishBoxing501.java:279: 错误: 找不到符号
+            log.info("  计算次数：{}", calculateSize);
+            ^
+  符号:   变量 log
+  位置: 类 ImprovedFishBoxing501
+ImprovedFishBoxing501.java:280: 错误: 找不到符号
+            log.info("超时的鱼：三分钟{}条,四分钟{}条,五分钟{}条,七分钟{}条,九分钟{}条,十分钟{}条,十一分钟{}条",
+            ^
+  符号:   变量 log
+  位置: 类 ImprovedFishBoxing501
+ImprovedFishBoxing501.java:296: 错误: 找不到符号
+            log.info("最终记录 缓存箱：{} 完成率：{}%（数量）/ {}%（重量） 剩余：{}kg ，计算次数：{}，总样本：{}",
+            ^
+  符号:   变量 log
+  位置: 类 ImprovedFishBoxing501
+ImprovedFishBoxing501.java:324: 错误: 找不到符号
+        BoxConfig cfg = configs[ThreadLocalRandom.current().nextInt(configs.length)];
+        ^
+  符号:   类 BoxConfig
+  位置: 类 ImprovedFishBoxing501
+ImprovedFishBoxing501.java:331: 错误: 找不到符号
+        BoxConfig specConfig = getSpec(weight);
+        ^
+  符号:   类 BoxConfig
+  位置: 类 ImprovedFishBoxing501
+ImprovedFishBoxing501.java:332: 错误: 找不到符号
+        return new Fish(id, weight, 0, specConfig.getSpec());
+                   ^
+  符号:   类 Fish
+  位置: 类 ImprovedFishBoxing501
+ImprovedFishBoxing501.java:346: 错误: 找不到符号
+            for (Fish fish1 : v) {
+                 ^
+  符号:   类 Fish
+  位置: 类 ImprovedFishBoxing501
+ImprovedFishBoxing501.java:351: 错误: 找不到符号
+            List<Fish>[] cacheBox = cacheBoxes[i];
+                 ^
+  符号:   类 Fish
+  位置: 类 ImprovedFishBoxing501
+ImprovedFishBoxing501.java:353: 错误: 找不到符号
+                List<Fish> box = cacheBox[j];
+                     ^
+  符号:   类 Fish
+  位置: 类 ImprovedFishBoxing501
+ImprovedFishBoxing501.java:355: 错误: 找不到符号
+                for (Fish fish1 : box) {
+                     ^
+  符号:   类 Fish
+  位置: 类 ImprovedFishBoxing501
+ImprovedFishBoxing501.java:368: 错误: 找不到符号
+            Fish fish = generateRandomFish(i);
+            ^
+  符号:   类 Fish
+  位置: 类 ImprovedFishBoxing501
+ImprovedFishBoxing501.java:380: 错误: 找不到符号
+                log.info("进度：{}/{} ({}%)，缓冲池：{}，已装箱：{}箱/{}条，失败箱子：{}，回流：{}",
+                ^
+  符号:   变量 log
+  位置: 类 ImprovedFishBoxing501
+ImprovedFishBoxing501.java:387: 错误: 找不到符号
+                ArrayList<Fish> arrayList = new ArrayList<>(reflowFish);
+                          ^
+  符号:   类 Fish
+  位置: 类 ImprovedFishBoxing501
+ImprovedFishBoxing501.java:389: 错误: 找不到符号
+                for (Fish newFish : arrayList) {
+                     ^
+  符号:   类 Fish
+  位置: 类 ImprovedFishBoxing501
+ImprovedFishBoxing501.java:396: 错误: 找不到符号
+            ArrayList<Fish> arrayList = new ArrayList<>(reflowFish);
+                      ^
+  符号:   类 Fish
+  位置: 类 ImprovedFishBoxing501
+ImprovedFishBoxing501.java:398: 错误: 找不到符号
+            for (Fish newFish : arrayList) {
+                 ^
+  符号:   类 Fish
+  位置: 类 ImprovedFishBoxing501
+ImprovedFishBoxing501.java:442: 错误: 找不到符号
+                Fish evicted = evictOldest();
+                ^
+  符号:   类 Fish
+  位置: 类 ImprovedFishBoxing501
+ImprovedFishBoxing501.java:460: 错误: 找不到符号
+        BoxConfig cfg = configs[specIdx];
+        ^
+  符号:   类 BoxConfig
+  位置: 类 ImprovedFishBoxing501
+ImprovedFishBoxing501.java:466: 错误: 找不到符号
+            List<Fish> cacheBox = cacheBoxes[specIdx][bj];
+                 ^
+  符号:   类 Fish
+  位置: 类 ImprovedFishBoxing501
+ImprovedFishBoxing501.java:494: 错误: 找不到符号
+            List<Fish> mainBuf = bufferMap.getOrDefault(mainSpec, new ArrayList<>());
+                 ^
+  符号:   类 Fish
+  位置: 类 ImprovedFishBoxing501
+ImprovedFishBoxing501.java:498: 错误: 找不到符号
+                    List<Fish> res = mainTable.findCombination(k, Math.max(0, needLow), needHigh);
+                         ^
+  符号:   类 Fish
+  位置: 类 ImprovedFishBoxing501
+ImprovedFishBoxing501.java:512: 错误: 找不到符号
+                List<Fish> adjBuf = bufferMap.getOrDefault(adjSpec, new ArrayList<>());
+                     ^
+  符号:   类 Fish
+  位置: 类 ImprovedFishBoxing501
+100 个错误
+仅显示前 100 个错误（共 191 个）；若要查看更多错误，请使用 -Xmaxerrs
