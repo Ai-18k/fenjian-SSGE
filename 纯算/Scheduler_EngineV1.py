@@ -28,7 +28,7 @@ from typing import Any, TextIO
 # 规格表 SPECS：键=规格名，值含 range(克重区间) 与 counts(合法装箱尾数)
 # ---------------------------------------------------------------------------
 SPECS: dict[str, dict] = {
-    "15p": {"range": (566, 700), "counts": (7, 8)},
+    "15p": {"range": (566, 700), "counts": (7, 8，9)},
     "20p": {"range": (446, 565), "counts": (10, 11)},
     "25p": {"range": (366, 445), "counts": (12, 13, 14)},
     "30p": {"range": (306, 365), "counts": (15, 16)},
@@ -58,8 +58,8 @@ MODULE_SPECS: dict[str, tuple[str, ...]] = {
 }
 
 ALL_SPECS: tuple[str, ...] = tuple(SPECS.keys())           # 全部 18 规格
-# DEFAULT_ENABLED_SPECS: tuple[str, ...] = ("15p", "20p", "25p", "30p", "35p", "40p")  # 默认启用
-DEFAULT_ENABLED_SPECS: tuple[str, ...] = ("45p", "50p", "60p", "70p", "80p", "90p")  # 默认启用
+DEFAULT_ENABLED_SPECS: tuple[str, ...] = ("15p", "20p", "25p", "30p", "35p", "40p")  # 默认启用
+# DEFAULT_ENABLED_SPECS: tuple[str, ...] = ("45p", "50p", "60p", "70p", "80p", "90p")  # 默认启用
 # DEFAULT_ENABLED_SPECS: tuple[str, ...] = ("100p", "110p", "120p", "130p", "140p", "150p")  # 默认启用
 DEMO_SPECS: tuple[str, ...] = DEFAULT_ENABLED_SPECS          # 演示用规格（同默认）
 
@@ -72,7 +72,7 @@ BUCKET_LABEL = {"small": "小", "medium": "中", "large": "大"}  # 分区中文
 
 DEFAULT_TOTAL = 25000              # 默认入料条数
 DEFAULT_SEED = 42                  # 默认随机种子
-DEFAULT_MOVE_TIMEOUT = 600        # 默认队首超时阈值
+DEFAULT_MOVE_TIMEOUT = 180        # 默认队首超时阈值
 DEFAULT_CAP_FACTOR = 2             # 三合一扩容：min(counts) + cap_factor（默认 +1）
 DEFAULT_STORAGE_CAPACITY = 500    # 暂存箱容量上限（条）
 STOP_MODE_COUNT = "count"          # 结束模式：按条数
@@ -944,12 +944,12 @@ class SchedulerEngine:
         self._log_fp: TextIO | None = None
 
     def _default_log_path(self) -> Path:
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        # ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         if self.stop_mode == STOP_MODE_WEIGHT:
             stop_tag = f"w{self.stop_weight_g // 1_000_000}t"
         else:
             stop_tag = f"n{self.stop_count}"
-        return _root / "data" / f"run_log_seed{self.seed}_{stop_tag}_{ts}.log"
+        return _root / "data" / f"run_log_seed{self.seed}_{stop_tag}_{self.build_final_metrics()['packed_fish']}.log"
 
     def _open_run_log(self) -> Path | None:
         """打开运行日志文件（追加写入，实时 flush）。"""
@@ -1014,6 +1014,66 @@ class SchedulerEngine:
         peak_pct = round(peak / cap * 100, 1) if cap else 0.0
         return f"暂存 {cur}/{cap}({cur_pct}%) 峰值 {peak}/{cap}({peak_pct}%)"
 
+    @staticmethod
+    def _format_fish_weights(
+        fish_list: list[Fish],
+        *,
+        max_show: int = 12,
+        with_id: bool = True,
+    ) -> str:
+        """格式化鱼重量列表，过长时截断。"""
+        if not fish_list:
+            return "-"
+        shown = fish_list[:max_show]
+        if with_id:
+            parts = [f"#{f.id}:{f.weight}g" for f in shown]
+        else:
+            parts = [f"{f.weight}g" for f in shown]
+        text = ",".join(parts)
+        extra = len(fish_list) - len(shown)
+        if extra > 0:
+            text += f",…+{extra}"
+        return text
+
+    def _storage_inventory_text(self, max_fish_per_spec: int = 12) -> str:
+        """暂存箱分规格条数、总重与鱼重明细。"""
+        if not self.lanes.storage:
+            return "空"
+        by_spec: dict[str, list[Fish]] = {}
+        for fish in self.lanes.storage:
+            key = fish.spec or "?"
+            by_spec.setdefault(key, []).append(fish)
+        parts: list[str] = []
+        total_w = 0
+        for spec in sorted(by_spec, key=lambda s: (s == "?", s)):
+            fish_list = by_spec[spec]
+            spec_w = sum(f.weight for f in fish_list)
+            total_w += spec_w
+            label = spec.upper() if spec != "?" else "?"
+            detail = self._format_fish_weights(
+                fish_list, max_show=max_fish_per_spec
+            )
+            parts.append(f"{label}×{len(fish_list)}={spec_w}g[{detail}]")
+        return f"共{len(self.lanes.storage)}条 {total_w}g | " + " ".join(parts)
+
+    def _lanes_inventory_text(self, max_fish_per_spec: int = 12) -> str:
+        """各规格料道条数、总重与 FIFO 鱼重明细（仅非空料道）。"""
+        parts: list[str] = []
+        for spec in self.specs:
+            lane = self.lanes.lane[spec]
+            if not lane:
+                continue
+            cap = spec_total_capacity(spec, self.cap_factor)
+            lane_w = sum(f.weight for f in lane)
+            detail = self._format_fish_weights(lane, max_show=max_fish_per_spec)
+            parts.append(f"{spec.upper()} {len(lane)}/{cap} 计{lane_w}g [{detail}]")
+        return " | ".join(parts) if parts else "空"
+
+    def _log_inventory_snapshot(self, *, force: bool = False) -> None:
+        """运行日志：暂存箱与料道当前鱼重量快照。"""
+        self._log("暂存库存", self._storage_inventory_text(), force=force)
+        self._log("料道库存", self._lanes_inventory_text(), force=force)
+
     def _timeout_status(self) -> str:
         lane_to = self.stats.timeout_tail
         stor_to = self.stats.storage_timeout_tail
@@ -1025,7 +1085,13 @@ class SchedulerEngine:
         parts = "/".join(
             f"{BUCKET_LABEL[b]}{len(self.lanes.bucket_fish(spec, b))}" for b in BUCKETS
         )
-        return f"料道 {spec.upper()} {total}/{cap} ({parts})"
+        lane = self.lanes.lane.get(spec, [])
+        base = f"料道 {spec.upper()} {total}/{cap} ({parts})"
+        if not lane:
+            return base
+        lane_w = sum(f.weight for f in lane)
+        detail = self._format_fish_weights(lane, max_show=8)
+        return f"{base} 计{lane_w}g [{detail}]"
 
     def _note_storage_peak(self) -> None:
         """更新暂存箱历史峰值，创新高时强制打印。"""
@@ -1041,6 +1107,7 @@ class SchedulerEngine:
                 f"↑ 新峰值 {count}/{cap} ({pct}%)，+{delta} | {self._timeout_status()}",
                 force=True,
             )
+            self._log_inventory_snapshot(force=True)
 
     def _warn_timeout_pressure(self) -> None:
         """verbose 时扫描料道队首与暂存最久鱼，接近阈值则预警。"""
@@ -1854,6 +1921,7 @@ class SchedulerEngine:
                 f"{self._storage_status()} | {self._timeout_status()} | {tail_note}",
                 force=True,
             )
+            self._log_inventory_snapshot(force=True)
         # 若本步处理后已达结束条件，返回 False 通知调用方停止
         return not self._intake_complete()
 
@@ -1908,6 +1976,7 @@ class SchedulerEngine:
             f"暂存峰值 {peak}/{cap}({peak_pct}%)",
             force=True,
         )
+        self._log_inventory_snapshot(force=True)
 
     def print_report(self) -> None:
         """在终端打印批末汇总，突出配箱、暂存峰值、超时、回流、批末尾料五项指标。"""
@@ -2233,3 +2302,6 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
+
